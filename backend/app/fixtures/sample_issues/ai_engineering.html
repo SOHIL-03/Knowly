@@ -1,0 +1,24 @@
+<html><body>
+<h1>AI Engineering Digest (sample issue)</h1>
+
+<h3>1. Choosing an embedding size</h3>
+<p>The Gemini embeddings guide says the models output 3072-dimensional vectors by default and accept an output dimensionality setting for smaller vectors, recommending 768, 1536 or 3072. Smaller vectors from gemini-embedding-001 need to be normalised by the caller.
+<a href="https://ai.google.dev/gemini-api/docs/embeddings?utm_source=aied">Embeddings guide</a></p>
+
+<h3>2. Getting JSON you can trust from a model</h3>
+<p>The Gemini API can be asked for structured output: you supply a JSON schema and the response is constrained to it. The guide still recommends validating the result in your own code before using it.
+<a href="https://ai.google.dev/gemini-api/docs/structured-output">Structured output</a></p>
+
+<h3>3. Vector search lands in the database you already use</h3>
+<p>Another week, another database adding vectors: Firestore's guide shows how to store embeddings next to the rest of a document and query the nearest neighbours, so small apps may not need a separate vector store.
+<a href="https://firebase.google.com/docs/firestore/vector-search">Firestore vector search</a></p>
+
+<h3>4. Retrieval-augmented generation, in plain words</h3>
+<p>Google Cloud's explainer describes retrieval-augmented generation as fetching relevant documents first and giving them to the model with the question, so answers can be grounded in those sources instead of only in what the model memorised.
+<a href="https://cloud.google.com/use-cases/retrieval-augmented-generation">What is RAG?</a></p>
+
+<h3>5. Reader question</h3>
+<p>A reader asked why we keep repeating "evaluate before you ship". Short answer from the editors: write a small set of test questions with expected answers before changing prompts, so you can tell whether a change helped. No link this week; we will cover eval tooling in a later issue.</p>
+
+<p><a href="https://sample.knowly.dev/prefs">Manage preferences</a> | <a href="https://sample.knowly.dev/unsubscribe">Unsubscribe</a></p>
+</body></html>

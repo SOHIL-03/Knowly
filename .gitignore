@@ -1,0 +1,53 @@
+# Secrets and local env (keep the committed templates)
+.env*
+!.env.example
+backend/.local-secrets/
+*-sa.json
+service-account*.json
+
+# Node / frontend
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+*.local
+*.tsbuildinfo
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Python backend
+backend/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+backend/.deps-installed
+
+# Firebase CLI and emulators
+.firebase/
+.emulator-data/
+firebase-export-*/
+*-debug.log
+ui-debug.log
+
+# Logs
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

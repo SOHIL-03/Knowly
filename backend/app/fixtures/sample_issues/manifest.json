@@ -1,0 +1,23 @@
+{
+  "_note": "Sample-mode issues written by the Knowly team for demos. They are not copies of real newsletters. Every link is a public documentation page and each blurb only describes what that page covers. Replace with real issues after the parsing feasibility test (Architecture v3 section 15.1).",
+  "issues": [
+    {
+      "file": "cloud_builders.html",
+      "sender": {"id": "sample_cloud_builders", "name": "Cloud Builders Weekly (sample)", "domain": "sample.knowly.dev", "isKnownTech": true},
+      "subject": "Vector search in Firestore, warm Cloud Run instances, retries done right",
+      "headers": {"List-Unsubscribe": "<mailto:unsubscribe@sample.knowly.dev>", "List-Id": "cloud-builders.sample.knowly.dev"}
+    },
+    {
+      "file": "ai_engineering.html",
+      "sender": {"id": "sample_ai_engineering", "name": "AI Engineering Digest (sample)", "domain": "sample.knowly.dev", "isKnownTech": true},
+      "subject": "Embeddings dimensions, structured output, and RAG basics",
+      "headers": {"List-Unsubscribe": "<mailto:unsubscribe@sample.knowly.dev>", "List-Id": "ai-engineering.sample.knowly.dev"}
+    },
+    {
+      "file": "python_web.html",
+      "sender": {"id": "sample_python_web", "name": "Python & Web Weekly (sample)", "domain": "sample.knowly.dev", "isKnownTech": true},
+      "subject": "FastAPI dependencies, Pydantic models, speech in the browser",
+      "headers": {"List-Unsubscribe": "<mailto:unsubscribe@sample.knowly.dev>", "List-Id": "python-web.sample.knowly.dev"}
+    }
+  ]
+}

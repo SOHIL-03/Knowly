@@ -1,0 +1,28 @@
+<html><head><style>body{font-family:sans-serif}</style><script>trackOpen()</script></head>
+<body>
+<img src="https://sample.knowly.dev/pixel.gif" width="1" height="1">
+<h1>Cloud Builders Weekly (sample issue)</h1>
+<p>This week: vector search without a separate vector database, fewer cold starts, and how to retry background work safely.</p>
+
+<h2>Firestore can store embeddings and run nearest-neighbour queries</h2>
+<p>Firestore documents can hold vector fields, and a nearest-neighbour query returns the documents whose embeddings are closest to a query vector, using Euclidean, cosine or dot-product distance. A vector index is required, and the documentation lists 2048 as the maximum supported embedding dimension.
+<a href="https://firebase.google.com/docs/firestore/vector-search?utm_source=newsletter&amp;utm_medium=email">Read the vector search guide</a></p>
+
+<h2>Keeping Cloud Run instances warm</h2>
+<p>Cloud Run lets you set a minimum number of instances so that some containers stay ready and requests avoid a cold start. Idle minimum instances are billed, so the guide suggests using them where start-up latency matters.
+<a href="https://cloud.google.com/run/docs/configuring/min-instances?utm_campaign=wk42">Configure minimum instances</a></p>
+
+<table><tr><td>
+<p><b>SPONSORED</b> - Presented by ShipFast Hosting. Deploy anything in seconds with our global edge. <a href="https://sponsor.example.com/offer?ref=cbw">Claim your credit</a></p>
+</td></tr></table>
+
+<h2>Retries and dead letters for Pub/Sub subscribers</h2>
+<p>Pub/Sub can forward messages that repeatedly fail delivery to a dead-letter topic once a maximum number of delivery attempts is reached, and subscriptions can use a retry policy with exponential backoff.
+<a href="https://cloud.google.com/pubsub/docs/handling-failures">Handling message failures</a></p>
+
+<h2>HTTP target tasks in Cloud Tasks</h2>
+<p>Cloud Tasks can send HTTP requests to any endpoint, including Cloud Run services, and can attach an OIDC token so the receiving service can check who called it. Queues control dispatch rate and retry behaviour.
+<a href="https://cloud.google.com/tasks/docs/creating-http-target-tasks">Create HTTP target tasks</a></p>
+
+<p style="font-size:11px">You are receiving this because you subscribed to Cloud Builders Weekly. <a href="https://sample.knowly.dev/unsubscribe">Unsubscribe</a></p>
+</body></html>

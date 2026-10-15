@@ -1,0 +1,12 @@
+{
+  "name": "Knowly",
+  "short_name": "Knowly",
+  "description": "Your newsletters as a short spoken briefing that checks what you learned.",
+  "start_url": "/today",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#3B5BDB",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

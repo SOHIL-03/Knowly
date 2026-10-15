@@ -1,0 +1,10 @@
+rules_version = '2';
+// Audio, transcripts, briefs and raw email are never read directly by the browser.
+// The API hands out short-lived signed URLs after checking ownership.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
