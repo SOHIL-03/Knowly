@@ -118,9 +118,13 @@ class GeminiSpeaker:
                 ),
             )
         except GeminiError as err:
+            log(logger, logging.ERROR, "tts_call_failed", model=model, category=err.category.value, attempts=err.attempts,
+                latencyMs=timer.ms())
             raise to_ai_error(err) from None
         audio = getattr(interaction, "output_audio", None)
         if audio is None or not getattr(audio, "data", None):
+            log(logger, logging.ERROR, "tts_no_audio", model=model, latencyMs=timer.ms(),
+                outputType=type(interaction).__name__)
             raise AiUnavailable("Gemini TTS returned no audio")
         data = base64.b64decode(audio.data)
         log(logger, logging.INFO, "tts_call", model=self.settings.gemini_tts_model, latencyMs=timer.ms(), bytes=len(data))
@@ -132,7 +136,11 @@ class GeminiSpeaker:
         multi = len(voices) == 2
         pcm = b""
         parts: list[tuple[int, float]] = []
-        for chunk in chunk_turns(turns, self.settings.tts_chunk_chars):
+        chunks = chunk_turns(turns, self.settings.tts_chunk_chars)
+        log(logger, logging.INFO, "tts_synthesize_start", turns=len(turns), chunks=len(chunks), multiSpeaker=multi,
+            chars=sum(len(t.text) for t in turns), model=self.settings.gemini_tts_model)
+        for n, chunk in enumerate(chunks, start=1):
+            log(logger, logging.DEBUG, "tts_chunk", chunk=f"{n}/{len(chunks)}", turns=len(chunk))
             content = []
             for t in chunk:
                 ann: dict = {"type": "speech_metadata"}

@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.ai import prompts
-from app.ai.client import AiOutputInvalid
+from app.ai.client import INJECTION_GUARD, AiOutputInvalid
 from app.ai.schemas import (
     ApplyResult,
     AskClassification,
@@ -76,7 +76,7 @@ class FakeLLM:
         self.calls: list[tuple[str, str]] = []
         self.invalid: set[str] = set()  # schema names that should fail validation
         self.unavailable = False
-        self.quota = False  # simulate a used-up Gemini quota
+        self.quota = False  # simulate a used-up provider quota
         self.script_unsupported = False  # scripts include a claim the faithfulness check rejects
 
     # --- structured ---------------------------------------------------------------------------
@@ -240,6 +240,50 @@ class FakeLLM:
         first = items[0]
         yield f"{first['note'][:60]} "
         yield f"[{first['id']}]."
+
+
+class FakeOpenAIClient:
+    """Stands in for openai.OpenAI: answers chat.completions.create() with FakeLLM's deterministic
+    output, so the real OpenAILLM (request building, JSON parsing, validation) runs in the pipeline."""
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self.fake = FakeLLM()
+        self.requests: list[dict] = []
+        self.responses: list[str] = []  # the exact message.content returned for each non-stream request
+        self.fail: BaseException | None = None  # raised by every request when set
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kw):
+        from types import SimpleNamespace
+
+        from app.ai import schemas
+
+        self.requests.append(kw)
+        if self.fail is not None:
+            raise self.fail
+        system, user = kw["messages"][0]["content"], kw["messages"][1]["content"]
+        if kw.get("stream"):
+            plain = system.removesuffix("\n\n" + INJECTION_GUARD)
+
+            def chunks():
+                for text in self.fake.stream_text("flash", plain, user):
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=None)], usage=None)
+
+            return chunks()
+        # The schema the request asked for is embedded in the system prompt; find which model it is.
+        candidates = {
+            cls: json.dumps(cls.model_json_schema(), separators=(",", ":"))
+            for cls in vars(schemas).values()
+            if isinstance(cls, type) and issubclass(cls, BaseModel) and cls is not BaseModel
+        }
+        schema = max((cls for cls, text in candidates.items() if text in system), key=lambda cls: len(candidates[cls]))
+        out = self.fake.generate_json("flash", system, user, schema)
+        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        message = SimpleNamespace(content=out.model_dump_json(), refusal=None)
+        self.responses.append(message.content)
+        return SimpleNamespace(model=kw["model"], usage=usage, choices=[SimpleNamespace(message=message, finish_reason="stop")])
 
 
 class InMemoryBlobs:

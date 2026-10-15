@@ -3,7 +3,7 @@
 #
 # - activates the conda environment "ht" (override with CONDA_ENV=name ./run.sh)
 # - installs Python packages on first run and whenever requirements change
-# - checks backend/.env (GEMINI_API_KEY is the only value you must set)
+# - checks backend/.env (OPENAI_API_KEY for text, GEMINI_API_KEY_1 for embeddings and audio must be set)
 # - serves on 0.0.0.0:8000 (all interfaces) with auto-reload; HOST=127.0.0.1 ./run.sh for local only
 #
 # Start the Firebase emulators with ../frontend/run.sh (they can start before or after this).
@@ -29,6 +29,14 @@ if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
 fi
 conda activate "$ENV_NAME"
 
+# On Windows, conda's bash activation script points SSL_CERT_FILE at $CONDA_PREFIX/ssl/cacert.pem, which
+# does not exist there (it lives in Library/ssl). The Gemini SDK then fails with FileNotFoundError while
+# building its SSL context. Drop the variable when it points nowhere so Python falls back to certifi.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ ! -f "$SSL_CERT_FILE" ]; then
+  echo "Ignoring SSL_CERT_FILE='$SSL_CERT_FILE' (file not found); using the certifi CA bundle."
+  unset SSL_CERT_FILE
+fi
+
 if ! python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
   echo "Python 3.12 or newer is required; '$ENV_NAME' has $(python --version 2>&1)." >&2
   exit 1
@@ -49,6 +57,13 @@ if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created backend/.env from .env.example."
 fi
+# OpenAI key (all text generation); the value is never printed.
+OPENAI_VALUE="$( (grep -E '^OPENAI_API_KEY=' .env || true) | head -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+if [ -z "$OPENAI_VALUE" ]; then
+  echo "Set OPENAI_API_KEY in backend/.env (used for all text generation), then run this script again." >&2
+  exit 1
+fi
+echo "OpenAI API key: configured"
 # Count configured Gemini keys (GEMINI_API_KEY_1..10, or the single GEMINI_API_KEY) without printing them.
 KEY_COUNT=0
 while IFS= read -r line; do
@@ -59,7 +74,7 @@ if [ "$KEY_COUNT" -eq 0 ]; then
   echo "Set GEMINI_API_KEY_1 (and optionally _2.._10) in backend/.env, then run this script again." >&2
   exit 1
 fi
-echo "Gemini API keys configured: $KEY_COUNT"
+echo "Gemini API keys configured (embeddings and audio): $KEY_COUNT"
 
 if curl -s -m 2 "http://127.0.0.1:8080" >/dev/null 2>&1; then
   echo "Firestore emulator: running"

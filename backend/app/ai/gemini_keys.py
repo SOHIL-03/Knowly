@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import Settings
-from app.logs import Timer, get_logger, log, register_secret
+from app.logs import Timer, exc_fields, get_logger, log, register_secret
 
 logger = get_logger(__name__)
 
@@ -250,6 +250,7 @@ class GeminiKeyPool:
         if client is None:
             client = self._factory(key)
             self._clients[key.name] = client
+            log(logger, logging.INFO, "gemini_client_created", key=key.name, vertex=self.vertex)
         return client
 
     def call[R](self, what: str, fn: Callable[[Any], R]) -> R:
@@ -270,7 +271,8 @@ class GeminiKeyPool:
                     c = classify(exc)
                     log(logger, logging.WARNING, "gemini_attempt_failed", what=what, attempt=f"{idx}/{total}",
                         key=key.name, category=c.category.value, code=c.code, status=c.status,
-                        quotaIds=c.quota_ids[:3], retryAfter=c.retry_after, sameKeyRetry=retries)
+                        quotaIds=c.quota_ids[:3], retryAfter=c.retry_after, sameKeyRetry=retries,
+                        **exc_fields(exc))
                     if c.category in RETRY_SAME_KEY and retries < MAX_TRANSIENT_RETRIES_PER_KEY:
                         if c.category == Category.RATE_LIMITED and c.retry_after and c.retry_after > MAX_RETRY_AFTER_SECONDS:
                             seen.append(Category.QUOTA_EXHAUSTED)

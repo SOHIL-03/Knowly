@@ -22,7 +22,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.ai import prompts
 from app.ai.client import AiOutputInvalid, AiUnavailable
 from app.ai.schemas import ExtractionResult, WholeEmailSummary
-from app.logs import get_logger, log
+from app.logs import Timer, exc_fields, get_logger, log
 from app.pipeline.dedupe import DedupeInput, cluster
 from app.pipeline.enrich import fetch_article
 from app.pipeline.text import clean_issue_html, is_newsletter, url_in_issue
@@ -78,7 +78,7 @@ def load_sample_issues(day: str) -> list[RawIssue]:
 def store_issue(svc: Services, raw: RawIssue, day: str) -> str | None:
     """B2 output: issue doc + raw HTML in Storage (7-day lifecycle). Returns the issue id."""
     if not is_newsletter(raw.headers):
-        log(logger, logging.INFO, "skipped_non_newsletter", sender=raw.sender_id)
+        log(logger, logging.INFO, "skipped_non_newsletter", sender=raw.sender_id, headers=sorted(raw.headers))
         return None
     p = svc.paths
     p.sender(raw.sender_id).set(
@@ -90,6 +90,8 @@ def store_issue(svc: Services, raw: RawIssue, day: str) -> str | None:
     ref = p.issue(iid)
     snap = ref.get()
     if snap.exists:
+        log(logger, logging.INFO, "issue_already_stored", issueId=iid, sender=raw.sender_id,
+            parseStatus=(snap.to_dict() or {}).get("parseStatus"))
         return iid
     raw_path = f"raw/{iid}.html"
     svc.blobs.put_text(raw_path, raw.html, content_type="text/html; charset=utf-8")
@@ -108,6 +110,8 @@ def store_issue(svc: Services, raw: RawIssue, day: str) -> str | None:
         },
         merge=False,
     )
+    log(logger, logging.INFO, "issue_stored", issueId=iid, sender=raw.sender_id, source=raw.source,
+        htmlChars=len(raw.html), rawHtmlPath=raw_path)
     return iid
 
 
@@ -131,26 +135,41 @@ def _claim(svc: Services, ref, done_field: str, done_values: set[str]) -> bool:
 
 
 def parse_issue(svc: Services, issue_id: str) -> str:
-    """B3: Gemini splits the issue into items (schema 9.1). Returns the parse status."""
+    """B3: the LLM splits the issue into items (schema 9.1). Returns the parse status."""
     p = svc.paths
     ref = p.issue(issue_id)
     done = {"parsed", "whole_email_fallback"}
-    for _ in range(60):
+    timer = Timer()
+    for waited in range(60):
         data = ref.get().to_dict() or {}
+        if not data:
+            log(logger, logging.ERROR, "issue_missing", issueId=issue_id)
         if data.get("parseStatus") in done:
+            log(logger, logging.INFO, "issue_parse_cached", issueId=issue_id, status=data["parseStatus"],
+                items=data.get("itemCount"))
             return data["parseStatus"]
         if _claim(svc, ref, "parseStatus", done):
             break
+        if waited % 5 == 0:
+            log(logger, logging.INFO, "issue_parse_waiting_for_lease", issueId=issue_id, waitedSeconds=waited * 2,
+                parseStatus=data.get("parseStatus"))
         time.sleep(2)  # another worker holds the lease
     else:
+        log(logger, logging.ERROR, "issue_parse_lease_timeout", issueId=issue_id, waitedSeconds=timer.ms() // 1000)
         raise RuntimeError(f"issue {issue_id} is locked by another worker")
 
     data = ref.get().to_dict() or {}
+    log(logger, logging.INFO, "issue_parse_start", issueId=issue_id, sender=data.get("senderName"),
+        rawHtmlPath=data.get("rawHtmlPath"), previousStatus=data.get("parseStatus"))
     html = svc.blobs.get_text(data["rawHtmlPath"])
     if html is None:
+        log(logger, logging.ERROR, "issue_raw_html_missing", issueId=issue_id, rawHtmlPath=data["rawHtmlPath"],
+            hint="Blob is gone (emulator data reset or 7-day lifecycle); re-ingest the newsletter")
         ref.update({"parseStatus": "failed", "parseError": "raw HTML expired", "leaseUntil": None})
         return "failed"
     text, urls = clean_issue_html(html)
+    log(logger, logging.INFO, "issue_cleaned", issueId=issue_id, htmlChars=len(html), textChars=len(text),
+        sentChars=min(len(text), 30000), links=len(urls))
     items: list[dict[str, Any]] = []
     status = "parsed"
     try:
@@ -171,8 +190,9 @@ def parse_issue(svc: Services, issue_id: str) -> str:
                     "order": idx,
                 }
             )
-    except AiOutputInvalid:
+    except AiOutputInvalid as exc:
         status = "whole_email_fallback"
+        log(logger, logging.WARNING, "issue_parse_fallback_whole_email", issueId=issue_id, **exc_fields(exc, frames=1))
         summary = svc.llm.generate_json(
             "flash", prompts.WHOLE_EMAIL_SYSTEM, f"<newsletter>\n{text[:30000]}\n</newsletter>", WholeEmailSummary,
             temperature=0.1,
@@ -181,7 +201,8 @@ def parse_issue(svc: Services, issue_id: str) -> str:
             "headline": summary.headline, "blurb": summary.blurb, "url": None, "urlDropped": False,
             "isSponsor": False, "category": summary.category, "entities": summary.entities, "order": 0,
         }]
-    except AiUnavailable:
+    except AiUnavailable as exc:
+        log(logger, logging.ERROR, "issue_parse_llm_unavailable", issueId=issue_id, category=exc.category, durationMs=timer.ms())
         ref.update({"leaseUntil": None})
         raise
 
@@ -203,7 +224,9 @@ def parse_issue(svc: Services, issue_id: str) -> str:
         )
     batch.update(ref, {"parseStatus": status, "itemCount": len(items), "leaseUntil": None, "parsedAt": now()})
     batch.commit()
-    log(logger, logging.INFO, "issue_parsed", issueId=issue_id, items=len(items), status=status)
+    log(logger, logging.INFO, "issue_parsed", issueId=issue_id, items=len(items), status=status,
+        sponsors=sum(1 for it in items if it["isSponsor"]), withLink=sum(1 for it in items if it["url"]),
+        linksDropped=sum(1 for it in items if it.get("urlDropped")), durationMs=timer.ms())
     return status
 
 
@@ -219,6 +242,8 @@ def enrich_items(svc: Services, items: list[dict[str, Any]]) -> None:
     """B4: fetch linked article text for items that have not been enriched yet."""
     todo = [it for it in items if it.get("enrichStatus") == "pending"]
     s = svc.settings
+    timer = Timer()
+    log(logger, logging.INFO, "enrich_start", total=len(items), todo=len(todo), cached=len(items) - len(todo))
 
     def work(it: dict[str, Any]) -> None:
         res = fetch_article(it["url"], timeout=s.enrich_timeout_seconds, max_chars=s.enrich_max_chars, client=svc.http)
@@ -233,12 +258,19 @@ def enrich_items(svc: Services, items: list[dict[str, Any]]) -> None:
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(work, todo))
+    reasons: dict[str, int] = {}
+    for it in todo:
+        key = "ok" if not it.get("linkOnly") else str(it.get("linkOnlyReason"))
+        reasons[key] = reasons.get(key, 0) + 1
+    log(logger, logging.INFO, "enrich_done", todo=len(todo), outcomes=reasons, durationMs=timer.ms())
 
 
 def embed_and_cluster(svc: Services, items: list[dict[str, Any]]) -> tuple[dict[str, tuple[str, int]], str]:
     """B5: embeddings (cached on items) and clusters. Falls back to URL-only matching."""
     mode = "embedding"
+    timer = Timer()
     missing = [it for it in items if not it.get("embedding")]
+    log(logger, logging.INFO, "embed_start", items=len(items), missing=len(missing), cached=len(items) - len(missing))
     if missing:
         try:
             vectors = svc.embedder.embed([f"{it['headline']}\n{it['blurb']}" for it in missing])
@@ -247,9 +279,10 @@ def embed_and_cluster(svc: Services, items: list[dict[str, Any]]) -> tuple[dict[
                 it["embedding"] = v
                 batch.update(svc.paths.item(it["id"]), {"embedding": vec(v)})
             batch.commit()
-        except AiUnavailable:
+        except AiUnavailable as exc:
             mode = "url_only"
-            log(logger, logging.WARNING, "embedding_failed_url_fallback", count=len(missing))
+            log(logger, logging.WARNING, "embedding_failed_url_fallback", count=len(missing), category=exc.category,
+                **exc_fields(exc, frames=1))
     inputs = [
         DedupeInput(it["id"], it.get("url"), it["senderId"], unvec(it.get("embedding")) if mode == "embedding" else None)
         for it in items
@@ -260,4 +293,6 @@ def embed_and_cluster(svc: Services, items: list[dict[str, Any]]) -> tuple[dict[
     for iid, (cid, count) in clusters.items():
         batch.update(svc.paths.item(iid), {"clusterId": cid, "coveredByCount": count})
     batch.commit()
+    log(logger, logging.INFO, "cluster_done", mode=mode, inputs=len(inputs), clusters=len({c for c, _ in clusters.values()}),
+        threshold=svc.settings.dedupe_cosine_threshold, durationMs=timer.ms())
     return clusters, mode

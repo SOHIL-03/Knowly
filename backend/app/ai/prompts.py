@@ -1,4 +1,4 @@
-"""Prompt text for every Gemini call. Rules mirror Architecture v3 section 9."""
+"""Prompt text for every text-generation (OpenAI) call. Rules mirror Architecture v3 section 9."""
 
 from __future__ import annotations
 

@@ -4,6 +4,7 @@ Path conventions (audio is private per user; raw HTML and articles are the share
   raw/{issueId}.html                      raw newsletter HTML, deleted by a 7-day lifecycle rule
   articles/{itemId}.txt                   fetched article main text (shared cache)
   audio/{uid}/{briefingId}/{segId}.wav    segment podcast audio (Gemini multi-speaker TTS)
+  llmtrace/{uid}/{briefingId}.json         OpenAI response capture for the review preview (7-day lifecycle)
   audio/{uid}/qa/{qaId}.wav               spoken answer (Gemini single-speaker TTS)
   audio/{uid}/quiz/{quizId}-{part}.wav    spoken quiz question or feedback
 """
@@ -14,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from datetime import timedelta
@@ -23,6 +25,9 @@ from google.auth.credentials import AnonymousCredentials
 from google.cloud import storage
 
 from app.config import Settings, get_settings
+from app.logs import Timer, exc_fields, get_logger, log
+
+logger = get_logger(__name__)
 
 
 class BlobStore(Protocol):
@@ -39,39 +44,73 @@ class BlobStore(Protocol):
 class GcsBlobStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        if os.environ.get("STORAGE_EMULATOR_HOST"):
+        emulator = os.environ.get("STORAGE_EMULATOR_HOST")
+        if emulator:
             self.client = storage.Client(project=settings.gcp_project, credentials=AnonymousCredentials())
         else:
             self.client = storage.Client(project=settings.gcp_project)
         self.bucket = self.client.bucket(settings.storage_bucket)
+        log(logger, logging.INFO, "blob_store_ready", bucket=settings.storage_bucket, emulator=emulator or None)
+
+    def _fail(self, op: str, path: str, timer: Timer, exc: Exception) -> None:
+        # A refused connection to the emulator is retried by the client for ~2 minutes before it raises,
+        # so durationMs in this line is the first thing to look at.
+        log(logger, logging.ERROR, f"blob_{op}_failed", path=path, bucket=self.settings.storage_bucket,
+            emulator=os.environ.get("STORAGE_EMULATOR_HOST"), durationMs=timer.ms(), **exc_fields(exc))
 
     def put_text(self, path: str, text: str, content_type: str = "text/plain; charset=utf-8") -> None:
-        self.bucket.blob(path).upload_from_string(text.encode("utf-8"), content_type=content_type)
+        self.put_bytes(path, text.encode("utf-8"), content_type)
 
     def put_bytes(self, path: str, data: bytes, content_type: str) -> None:
-        self.bucket.blob(path).upload_from_string(data, content_type=content_type)
+        timer = Timer()
+        log(logger, logging.DEBUG, "blob_put_start", path=path, bytes=len(data))
+        try:
+            self.bucket.blob(path).upload_from_string(data, content_type=content_type)
+        except Exception as exc:
+            self._fail("put", path, timer, exc)
+            raise
+        log(logger, logging.INFO, "blob_put", path=path, bytes=len(data), contentType=content_type, durationMs=timer.ms())
 
     def get_bytes(self, path: str) -> bytes | None:
+        timer = Timer()
+        log(logger, logging.DEBUG, "blob_get_start", path=path)
         blob = self.bucket.blob(path)
         try:
-            return blob.download_as_bytes()
+            data = blob.download_as_bytes()
         except Exception as exc:  # google.api_core NotFound and emulator 404s
             if "404" in str(exc) or exc.__class__.__name__ == "NotFound":
+                log(logger, logging.WARNING, "blob_not_found", path=path, durationMs=timer.ms())
                 return None
+            self._fail("get", path, timer, exc)
             raise
+        log(logger, logging.INFO, "blob_get", path=path, bytes=len(data), durationMs=timer.ms())
+        return data
 
     def get_text(self, path: str) -> str | None:
         data = self.get_bytes(path)
         return data.decode("utf-8") if data is not None else None
 
     def exists(self, path: str) -> bool:
-        return self.bucket.blob(path).exists()
+        timer = Timer()
+        try:
+            found = self.bucket.blob(path).exists()
+        except Exception as exc:
+            self._fail("exists", path, timer, exc)
+            raise
+        log(logger, logging.DEBUG, "blob_exists", path=path, exists=found, durationMs=timer.ms())
+        return found
 
     def delete_prefix(self, prefix: str) -> int:
+        timer = Timer()
         count = 0
-        for blob in self.client.list_blobs(self.bucket, prefix=prefix):
-            blob.delete()
-            count += 1
+        try:
+            for blob in self.client.list_blobs(self.bucket, prefix=prefix):
+                blob.delete()
+                count += 1
+        except Exception as exc:
+            self._fail("delete_prefix", prefix, timer, exc)
+            raise
+        log(logger, logging.INFO, "blob_delete_prefix", prefix=prefix, deleted=count, durationMs=timer.ms())
         return count
 
     def gs_uri(self, path: str) -> str:

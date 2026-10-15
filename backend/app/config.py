@@ -35,14 +35,29 @@ class Settings(BaseSettings):
     # "cloud" requires real Google Cloud resources and refuses dev-only shortcuts.
     env: Literal["local", "cloud", "test"] = "local"
 
+    # DEBUG adds per-call detail; TRACE also lets HTTP client libraries log (very noisy).
+    log_level: str = "INFO"
+
     gcp_project: str = Field(default="demo-knowly", description="Google Cloud / Firebase project id")
     gcp_region: str = "us-central1"
 
-    # --- Gemini (text intelligence) -------------------------------------------------
+    # --- OpenAI (all text generation) -----------------------------------------------
+    # One backend-only key; every text call (parse, plans, scripts, Ask, quiz, grading, faithfulness)
+    # uses OPENAI_MODEL. There is no fallback to another provider (app/ai/openai_llm.py).
+    openai_api_key: str = Field(default="", repr=False)
+    openai_model: str = "gpt-4o-mini"
+    openai_timeout_seconds: float = 60.0
+    # Retries after the first attempt for 429 / 5xx / network errors (bounded, with backoff).
+    openai_max_retries: int = 2
+    # Review workflow: capture each OpenAI response for the preview and hold audio until the user
+    # clicks Generate Audio. A briefing can also opt in or out per request.
+    review_before_audio: bool = False
+
+    # --- Gemini (embeddings and text-to-speech only) ---------------------------------
     # API keys for the Gemini Developer API, tried in order 1 -> 10 on every request; the next key
     # is used only when the previous one is out of quota (app/ai/gemini_keys.py). Empty slots are
     # skipped. GEMINI_API_KEY is the single-key fallback used when no numbered key is set.
-    # Alternatively Vertex AI with ADC (GEMINI_USE_VERTEX=true; no keys, no failover).
+    # Alternatively Vertex AI with ADC for embeddings (GEMINI_USE_VERTEX=true); TTS always needs keys.
     gemini_api_key_1: str = Field(default="", repr=False)
     gemini_api_key_2: str = Field(default="", repr=False)
     gemini_api_key_3: str = Field(default="", repr=False)
@@ -56,10 +71,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", repr=False)
     gemini_use_vertex: bool = False
     gemini_vertex_location: str = "global"
-    # Model ids verified on ai.google.dev/gemini-api/docs/models on 2026-10-15.
-    gemini_flash_model: str = "gemini-3.8-flash"
-    # Pro-class work (plans, scripts, Apply) also uses Flash by product decision.
-    gemini_pro_model: str = "gemini-3.8-flash"
+    # Model id verified on ai.google.dev/gemini-api/docs/models on 2026-10-15.
     gemini_embed_model: str = "gemini-embedding-001"
     # Firestore vector fields support at most 2048 dimensions.
     embed_dim: int = 768

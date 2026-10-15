@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from google.api_core.exceptions import AlreadyExists
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.errors import not_found
+from app.logs import get_logger, log
 from app.services import Services
 from app.store import local_date, now, to_jsonable
 
+logger = get_logger(__name__)
 
-def create_briefing(svc: Services, uid: str, bid: str, *, kind: str = "daily") -> tuple[str, bool]:
+
+def create_briefing(svc: Services, uid: str, bid: str, *, kind: str = "daily",
+                    review_before_audio: bool | None = None) -> tuple[str, bool]:
     """Creates the briefing with status=generating and starts the pipeline.
 
     The document id is the idempotency key (uid + date, or date + suffix for regenerations and
@@ -25,11 +30,15 @@ def create_briefing(svc: Services, uid: str, bid: str, *, kind: str = "daily") -
             "kind": kind,
             "mode": user.get("mode", "sample"),
             "status": "generating",
+            "reviewBeforeAudio": svc.settings.review_before_audio if review_before_audio is None else review_before_audio,
             "progress": {"stage": "queued", "message": "Starting"},
             "createdAt": now(),
         })
     except AlreadyExists:
+        log(logger, logging.INFO, "briefing_exists", uid=uid, briefingId=bid)
         return bid, False
+    log(logger, logging.INFO, "briefing_created", uid=uid, briefingId=bid, kind=kind, mode=user.get("mode", "sample"),
+        dispatch=svc.settings.dispatch_mode)
     svc.dispatcher.run_briefing(uid, bid)
     return bid, True
 

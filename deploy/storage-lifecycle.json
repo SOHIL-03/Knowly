@@ -1,5 +1,5 @@
 {
   "rule": [
-    { "action": { "type": "Delete" }, "condition": { "age": 7, "matchesPrefix": ["raw/"] } }
+    { "action": { "type": "Delete" }, "condition": { "age": 7, "matchesPrefix": ["raw/", "llmtrace/"] } }
   ]
 }

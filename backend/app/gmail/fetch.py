@@ -16,7 +16,7 @@ from typing import Any
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.gmail.auth import GmailReauthRequired, gmail_service, mark_reauth
-from app.logs import get_logger, log
+from app.logs import exc_fields, get_logger, log
 from app.pipeline.ingest import RawIssue
 from app.pipeline.text import is_newsletter
 from app.services import Services
@@ -57,6 +57,7 @@ def detect_senders(svc: Services, uid: str) -> list[dict[str, Any]]:
     try:
         gmail = gmail_service(svc, uid)
     except GmailReauthRequired:
+        log(logger, logging.WARNING, "gmail_reauth_required", uid=uid, during="detect_senders")
         return []
     ids: list[str] = []
     req = gmail.users().messages().list(userId="me", q="newer_than:30d", maxResults=100)
@@ -85,15 +86,18 @@ def detect_senders(svc: Services, uid: str) -> list[dict[str, Any]]:
         svc.paths.sender(sid).set({"name": names[addr], "domain": domain, "address": addr, "isKnownTech": known}, merge=True)
         out.append({"senderId": sid, "name": names[addr], "address": addr, "domain": domain, "issueCount": n,
                     "isKnownTech": known, "enabled": enabled.get(sid, known)})
+    log(logger, logging.INFO, "senders_detected", uid=uid, messagesScanned=len(ids), senders=len(out))
     return out
 
 
 def fetch_new_issues(svc: Services, uid: str, user: dict[str, Any]) -> list[RawIssue]:
     gmail_state = user.get("gmail") or {}
     if gmail_state.get("status") != "ok":
+        log(logger, logging.WARNING, "gmail_fetch_skipped", uid=uid, reason="gmail not connected", status=gmail_state.get("status"))
         return []
     subs = {s.id: s.to_dict() or {} for s in svc.paths.newsletters(uid).where(filter=FieldFilter("enabled", "==", True)).stream()}
     if not subs:
+        log(logger, logging.WARNING, "gmail_fetch_skipped", uid=uid, reason="no enabled newsletters")
         return []
     addresses = {}
     for sid in subs:
@@ -101,20 +105,26 @@ def fetch_new_issues(svc: Services, uid: str, user: dict[str, Any]) -> list[RawI
         if sender.get("address"):
             addresses[sender["address"].lower()] = (sid, sender)
     if not addresses:
+        log(logger, logging.WARNING, "gmail_fetch_skipped", uid=uid, reason="enabled senders have no address", senders=len(subs))
         return []
     since = min((s.get("lastFetchedAt") for s in subs.values() if s.get("lastFetchedAt")), default=None)
     since = since or (now() - timedelta(days=2))
     query = "from:(" + " OR ".join(addresses) + f") after:{int(since.timestamp())}"
+    log(logger, logging.INFO, "gmail_fetch_start", uid=uid, senders=len(addresses), since=since.isoformat())
     try:
         gmail = gmail_service(svc, uid)
         res = gmail.users().messages().list(userId="me", q=query, maxResults=MAX_ISSUES_PER_RUN).execute()
     except GmailReauthRequired:
+        log(logger, logging.WARNING, "gmail_reauth_required", uid=uid)
         return []
     except Exception as exc:
         if "invalid_grant" in str(exc):
+            log(logger, logging.WARNING, "gmail_invalid_grant", uid=uid)
             mark_reauth(svc, uid)
             return []
+        log(logger, logging.ERROR, "gmail_list_failed", uid=uid, **exc_fields(exc))
         raise
+    log(logger, logging.INFO, "gmail_listed", uid=uid, messages=len(res.get("messages", [])))
     out: list[RawIssue] = []
     for ref in res.get("messages", []):
         msg = gmail.users().messages().get(userId="me", id=ref["id"], format="full").execute()
@@ -122,12 +132,14 @@ def fetch_new_issues(svc: Services, uid: str, user: dict[str, Any]) -> list[RawI
         _, addr = email.utils.parseaddr(h.get("From", ""))
         match = addresses.get(addr.lower())
         if not match:
+            log(logger, logging.INFO, "gmail_message_skipped", uid=uid, reason="sender not enabled")
             continue
         if not is_newsletter(h):
             log(logger, logging.INFO, "skipped_personal_mail", uid=uid)
             continue
         html = _html_part(msg.get("payload", {}))
         if not html:
+            log(logger, logging.WARNING, "gmail_message_skipped", uid=uid, reason="no html or text part", messageId=msg["id"])
             continue
         sid, sender = match
         received = datetime.fromtimestamp(int(msg.get("internalDate", "0")) / 1000, tz=UTC)
@@ -138,4 +150,5 @@ def fetch_new_issues(svc: Services, uid: str, user: dict[str, Any]) -> list[RawI
     at = now()
     for sid in subs:
         svc.paths.newsletters(uid).document(sid).set({"lastFetchedAt": at}, merge=True)
+    log(logger, logging.INFO, "gmail_fetch_done", uid=uid, issues=len(out))
     return out

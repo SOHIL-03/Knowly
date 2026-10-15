@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 
 from app.config import Settings
-from app.logs import get_logger, log
+from app.logs import Timer, correlation_id, exc_fields, get_logger, log, uid_hash
 
 logger = get_logger(__name__)
 
@@ -36,7 +36,9 @@ class InlineDispatcher:
     def run_briefing(self, uid: str, briefing_id: str) -> None:
         from app.tasks import handle_run_briefing
 
-        self.pool.submit(_safe, handle_run_briefing, {"uid": uid, "briefingId": briefing_id})
+        payload = {"uid": uid, "briefingId": briefing_id}
+        log(logger, logging.INFO, "task_submitted", task="run-briefing", mode="inline", **payload)
+        self.pool.submit(_safe, handle_run_briefing, payload, "run-briefing", correlation_id.get())
 
     def task(self, name: str, payload: dict[str, Any], *, delay_seconds: int = 0, dedupe_key: str | None = None) -> None:
         from app.tasks import TASK_HANDLERS
@@ -45,12 +47,15 @@ class InlineDispatcher:
         if dedupe_key:
             with self._lock:
                 if dedupe_key in self._pending:
+                    log(logger, logging.INFO, "task_deduplicated", task=name, dedupeKey=dedupe_key, mode="inline")
                     return
                 self._pending.add(dedupe_key)
+        cid = correlation_id.get()
+        log(logger, logging.INFO, "task_submitted", task=name, mode="inline", delaySeconds=delay_seconds, **_ids(payload))
 
         def run() -> None:
             try:
-                _safe(handler, payload)
+                _safe(handler, payload, name, cid)
             finally:
                 if dedupe_key:
                     with self._lock:
@@ -75,6 +80,7 @@ class SyncDispatcher:
         from app.tasks import handle_run_briefing
 
         self.calls.append(("run-briefing", {"uid": uid, "briefingId": briefing_id}))
+        log(logger, logging.DEBUG, "task_submitted", task="run-briefing", mode="sync", paused="run-briefing" in self.paused)
         if "run-briefing" not in self.paused:
             handle_run_briefing({"uid": uid, "briefingId": briefing_id})
 
@@ -98,7 +104,9 @@ class CloudDispatcher:
     def run_briefing(self, uid: str, briefing_id: str) -> None:
         topic = self.publisher.topic_path(self.settings.gcp_project, self.settings.pubsub_topic_run_briefing)
         data = json.dumps({"uid": uid, "briefingId": briefing_id}).encode()
-        self.publisher.publish(topic, data, jobKey=f"{uid}:{briefing_id}").result(timeout=30)
+        message_id = self.publisher.publish(topic, data, jobKey=f"{uid}:{briefing_id}").result(timeout=30)
+        log(logger, logging.INFO, "task_submitted", task="run-briefing", mode="cloud", topic=topic, messageId=message_id,
+            uid=uid, briefingId=briefing_id)
 
     def task(self, name: str, payload: dict[str, Any], *, delay_seconds: int = 0, dedupe_key: str | None = None) -> None:
         import datetime as dt
@@ -129,14 +137,33 @@ class CloudDispatcher:
         try:
             self.tasks.create_task(parent=self.queue, task=task)
         except AlreadyExists:
-            log(logger, logging.INFO, "task_deduplicated", task=name)
+            log(logger, logging.INFO, "task_deduplicated", task=name, dedupeKey=dedupe_key, mode="cloud")
+            return
+        log(logger, logging.INFO, "task_submitted", task=name, mode="cloud", delaySeconds=delay_seconds, **_ids(payload))
 
 
-def _safe(fn, payload: dict[str, Any]) -> None:
+def _ids(payload: dict[str, Any]) -> dict[str, Any]:
+    """The identifying fields of a task payload, for log lines (uid is hashed by log())."""
+    out = {k: payload[k] for k in ("briefingId", "segId", "itemId") if k in payload}
+    if "uid" in payload:
+        out["uidHash"] = uid_hash(payload["uid"])
+    return out
+
+
+def _safe(fn, payload: dict[str, Any], name: str | None = None, cid: str = "-") -> None:
+    # Worker threads do not inherit the request's contextvars, so carry the correlation id across.
+    task = name or getattr(fn, "__name__", "task")
+    token = correlation_id.set(cid if cid != "-" else f"{task}-{payload.get('briefingId', '')}".strip("-"))
+    timer = Timer()
+    log(logger, logging.INFO, "task_started", task=task, **_ids(payload))
     try:
         fn(payload)
-    except Exception:
-        logger.exception("background task failed")
+        log(logger, logging.INFO, "task_finished", task=task, durationMs=timer.ms(), **_ids(payload))
+    except Exception as exc:
+        logger.exception("background task failed", extra={"fields": {
+            "task": task, "durationMs": timer.ms(), **_ids(payload), **exc_fields(exc)}})
+    finally:
+        correlation_id.reset(token)
 
 
 def build_dispatcher(settings: Settings) -> Dispatcher:

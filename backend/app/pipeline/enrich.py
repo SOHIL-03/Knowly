@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.logs import get_logger, log
+from app.logs import Timer, get_logger, log
 from app.pipeline.text import normalize_url
 
 logger = get_logger(__name__)
@@ -48,25 +48,34 @@ def extract_main_text(html: str, base_url: str) -> tuple[str | None, list[str]]:
 
 def fetch_article(url: str, *, timeout: float, max_chars: int, client: httpx.Client | None = None) -> EnrichResult:
     own = client is None
+    timer = Timer()
     client = client or httpx.Client(follow_redirects=True, timeout=timeout, headers={"User-Agent": USER_AGENT})
     try:
         res = client.get(url)
     except httpx.HTTPError as exc:
+        log(logger, logging.INFO, "article_skipped", host=httpx.URL(url).host, reason=f"fetch_error:{type(exc).__name__}",
+            durationMs=timer.ms())
         return EnrichResult(None, True, f"fetch_error:{type(exc).__name__}", [])
     finally:
         if own:
             client.close()
+    def skipped(reason: str) -> EnrichResult:
+        log(logger, logging.INFO, "article_skipped", host=res.url.host, reason=reason, status=res.status_code,
+            redirects=len(res.history), durationMs=timer.ms())
+        return EnrichResult(None, True, reason, [])
+
     if res.status_code in (401, 402, 403, 451):
-        return EnrichResult(None, True, f"blocked:{res.status_code}", [])
+        return skipped(f"blocked:{res.status_code}")
     if res.status_code >= 400:
-        return EnrichResult(None, True, f"http:{res.status_code}", [])
+        return skipped(f"http:{res.status_code}")
     if "html" not in res.headers.get("content-type", ""):
-        return EnrichResult(None, True, "not_html", [])
+        return skipped("not_html")
     text, links = extract_main_text(res.text, str(res.url))
     if not text or len(text) < MIN_ARTICLE_CHARS:
-        return EnrichResult(None, True, "too_short_or_paywalled", [])
+        return skipped("too_short_or_paywalled")
     lowered = text[:3000].lower()
     if any(h in lowered for h in PAYWALL_HINTS) and len(text) < 3000:
-        return EnrichResult(None, True, "paywall", [])
-    log(logger, logging.INFO, "article_fetched", host=res.url.host, chars=len(text))
+        return skipped("paywall")
+    log(logger, logging.INFO, "article_fetched", host=res.url.host, chars=len(text), status=res.status_code,
+        durationMs=timer.ms())
     return EnrichResult(text[:max_chars], False, "ok", links)

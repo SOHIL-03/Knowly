@@ -1,7 +1,7 @@
 """Integration tests run against the Firebase Auth and Firestore emulators.
 
 Start them first:  npx firebase-tools emulators:start --only auth,firestore,storage --project demo-knowly
-Gemini text, Gemini TTS and Cloud Storage are replaced by deterministic fakes (tests/fakes.py).
+LLM text, Gemini TTS and Cloud Storage are replaced by deterministic fakes (tests/fakes.py).
 """
 
 from __future__ import annotations

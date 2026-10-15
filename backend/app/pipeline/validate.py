@@ -1,4 +1,4 @@
-"""Validators that sit between Gemini and storage (sections 9.2, 9.3, 9.4)."""
+"""Validators that sit between the LLM and storage (sections 9.2, 9.3, 9.4)."""
 
 from __future__ import annotations
 

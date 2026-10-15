@@ -1,5 +1,6 @@
 export type SegmentType = 'project' | 'learning' | 'quickhits' | 'review' | 'deeper';
-export type AudioStatus = 'pending' | 'processing' | 'ok' | 'failed';
+/** 'review': the script is written and waits for the user to press Generate Audio. */
+export type AudioStatus = 'review' | 'pending' | 'processing' | 'ok' | 'failed';
 
 export interface Source {
   itemId: string;
@@ -38,6 +39,7 @@ export interface Segment {
   audioUrl: string | null;
   faithfulness?: 'pass' | 'review' | 'fail' | 'unchecked' | null;
   scriptMode?: 'model' | 'fallback';
+  scriptEdited?: boolean;
   removedByUser?: boolean;
   wildcardItemId?: string | null;
   status?: 'generating' | 'ready' | 'failed';
@@ -65,6 +67,7 @@ export interface Briefing {
   alsoInInbox?: { itemId: string; headline: string; url: string | null; senderName: string }[];
   recap?: { takeaways: string[]; quizScore: { points: number; total: number } | null; savedCount: number };
   rating?: 'up' | 'down';
+  reviewBeforeAudio?: boolean;
   segments: Segment[];
 }
 

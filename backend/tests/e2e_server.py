@@ -1,8 +1,8 @@
 """TEST-ONLY launcher for browser end-to-end tests.
 
 Runs the real FastAPI app, the real inline dispatcher (background threads), the real Firestore and
-Auth emulators and the real Cloud Storage client against the Storage emulator. Only Gemini text and
-Gemini TTS are replaced by the deterministic fakes in tests/fakes.py, because no Gemini
+Auth emulators and the real Cloud Storage client against the Storage emulator. Only OpenAI text and
+Gemini TTS are replaced by the deterministic fakes in tests/fakes.py, because no provider
 credentials are available in CI. Never use this to serve real users.
 
     python -m tests.e2e_server   (from backend/, with the emulators running)

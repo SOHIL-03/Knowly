@@ -41,8 +41,9 @@ _services: Services | None = None
 
 
 def build_services(settings: Settings | None = None) -> Services:
-    from app.ai.client import GeminiEmbedder, GeminiLLM
+    from app.ai.client import GeminiEmbedder
     from app.ai.gemini_keys import GeminiKeyPool
+    from app.ai.openai_llm import OpenAILLM
     from app.audio.tts import build_speaker
     from app.dispatch import build_dispatcher
     from app.infra.blobs import GcsBlobStore
@@ -51,14 +52,14 @@ def build_services(settings: Settings | None = None) -> Services:
     from app.notify import FcmNotifier
 
     s = settings or get_settings()
-    pool = GeminiKeyPool(s)  # one shared pool: every Gemini request starts at GEMINI_API_KEY_1
-    llm = GeminiLLM(s, pool)
+    pool = GeminiKeyPool(s)  # embeddings + TTS: every Gemini request starts at GEMINI_API_KEY_1
+    llm = OpenAILLM(s)  # all text generation: OpenAI, one client for the process lifetime
     return Services(
         settings=s,
         db=firestore_client(),
         blobs=GcsBlobStore(s),
         llm=llm,
-        embedder=GeminiEmbedder(s, llm),
+        embedder=GeminiEmbedder(s, pool),
         tts=build_speaker(s, pool),
         dispatcher=build_dispatcher(s),
         secrets=default_secret_store(s),

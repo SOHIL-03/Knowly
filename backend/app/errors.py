@@ -46,16 +46,21 @@ def _body(code: str, message: str, details: Any = None) -> dict[str, Any]:
 
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
-    async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
+    async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
+        log(logger, logging.WARNING if exc.status < 500 else logging.ERROR, "api_error",
+            method=request.method, path=request.url.path, status=exc.status, code=exc.code, detail=exc.message)
         return JSONResponse(status_code=exc.status, content=_body(exc.code, exc.message, exc.details))
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
         details = [{"loc": list(e.get("loc", [])), "msg": e.get("msg")} for e in exc.errors()]
+        log(logger, logging.WARNING, "request_validation_failed", method=request.method, path=request.url.path, details=details[:10])
         return JSONResponse(status_code=422, content=_body("validation_error", "Request is invalid", details))
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        log(logger, logging.WARNING, "http_error", method=request.method, path=request.url.path,
+            status=exc.status_code, detail=str(exc.detail)[:200])
         return JSONResponse(status_code=exc.status_code, content=_body("http_error", str(exc.detail)))
 
     @app.exception_handler(Exception)

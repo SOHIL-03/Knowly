@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { AppShell } from '../components/AppShell';
 import { Banner, Button, Card, Skeleton } from '../components/ui';
 import { ApiError, get, patch, post } from '../lib/api';
+import { reviewPref, setReviewPref } from '../lib/review';
 import { track } from '../lib/events';
 import { useBriefing } from '../lib/live';
 import { minutes } from '../lib/transcript';
@@ -20,6 +21,7 @@ const audioLabel: Record<Segment['audioStatus'], string> = {
   pending: 'Audio on its way',
   processing: 'Making audio',
   failed: 'Text only',
+  review: 'Script ready to review',
 };
 
 export function Today() {
@@ -28,6 +30,7 @@ export function Today() {
   const [latestId, setLatestId] = useState<string | null | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [review, setReview] = useState(() => reviewPref() ?? false);
   const { briefing, reload } = useBriefing(user?.uid, latestId || undefined);
 
   useEffect(() => {
@@ -43,7 +46,7 @@ export function Today() {
     setStarting(true);
     setStartError(null);
     try {
-      const r = await post<{ briefingId: string }>('/briefings/generate', { kind, regenerate });
+      const r = await post<{ briefingId: string }>('/briefings/generate', { kind, regenerate, reviewBeforeAudio: reviewPref() });
       navigate(`/generating/${encodeURIComponent(r.briefingId)}`);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : 'Could not start a briefing');
@@ -88,6 +91,22 @@ export function Today() {
           {briefing?.status === 'ready' && ` · ${minutes(total)} · ${stories} stories`}
         </p>
       </header>
+
+      <label className="mb-4 flex min-h-11 items-start gap-3 text-body">
+        <input
+          type="checkbox"
+          checked={review}
+          onChange={(e) => {
+            setReview(e.target.checked);
+            setReviewPref(e.target.checked);
+          }}
+          className="mt-1 size-4 accent-[var(--accent)]"
+        />
+        <span>
+          Review OpenAI responses and the script before audio
+          <span className="block text-caption text-ink-3">Applies to the next briefing you make. Audio is only made when you press Generate Audio.</span>
+        </span>
+      </label>
 
       {startError && (
         <div className="mb-4">

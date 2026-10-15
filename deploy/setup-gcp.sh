@@ -60,8 +60,11 @@ for i in $(seq 1 "$GEMINI_KEY_COUNT"); do
   gcloud secrets create "gemini-api-key-$i" --replication-policy=automatic || true
   gcloud secrets add-iam-policy-binding "gemini-api-key-$i" --member="serviceAccount:$RUN_SA" --role=roles/secretmanager.secretAccessor
 done
+gcloud secrets create openai-api-key --replication-policy=automatic || true
+gcloud secrets add-iam-policy-binding openai-api-key --member="serviceAccount:$RUN_SA" --role=roles/secretmanager.secretAccessor
 gcloud secrets create gmail-oauth-client-secret --replication-policy=automatic || true
-echo "Add each key with: printf %s 'KEY' | gcloud secrets versions add gemini-api-key-<n> --data-file=-   (n = 1..$GEMINI_KEY_COUNT)"
+echo "Add the OpenAI key (all text generation): printf %s 'KEY' | gcloud secrets versions add openai-api-key --data-file=-"
+echo "Add each Gemini key (embeddings and TTS) with: printf %s 'KEY' | gcloud secrets versions add gemini-api-key-<n> --data-file=-   (n = 1..$GEMINI_KEY_COUNT)"
 echo "and the Gmail client secret: printf %s 'CLIENT_SECRET' | gcloud secrets versions add gmail-oauth-client-secret --data-file=-"
 
 echo "== Build the image"
@@ -70,8 +73,9 @@ IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/knowly/api:latest"
 gcloud builds submit backend --tag "$IMAGE"
 
 COMMON_ENV="ENV=cloud,GCP_PROJECT=$PROJECT_ID,GCP_REGION=$REGION,STORAGE_BUCKET=$BUCKET,DISPATCH_MODE=cloud,GMAIL_OAUTH_CLIENT_SECRET_NAME=gmail-oauth-client-secret"
-# Gemini text, embeddings and TTS use the Gemini API keys, read from Secret Manager at runtime.
-SECRETS=""
+# Text generation uses OPENAI_API_KEY; embeddings and TTS use the Gemini API keys. All are read from
+# Secret Manager at runtime.
+SECRETS="OPENAI_API_KEY=openai-api-key:latest"
 for i in $(seq 1 "$GEMINI_KEY_COUNT"); do
   SECRETS="${SECRETS:+$SECRETS,}GEMINI_API_KEY_$i=gemini-api-key-$i:latest"
 done

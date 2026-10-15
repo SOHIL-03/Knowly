@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.diagnostics import emulator_status, log_startup
 from app.deps import correlation_middleware, services
 from app.errors import install_error_handlers
 from app.logs import configure_logging
@@ -16,7 +17,8 @@ from app.services import Services
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    configure_logging()
+    configure_logging(settings.log_level)
+    log_startup(settings)
     app = FastAPI(title="Knowly API", version="3.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
     install_error_handlers(app)
     app.middleware("http")(correlation_middleware)
@@ -63,9 +65,12 @@ def create_app() -> FastAPI:
         from app.ai.gemini_keys import load_keys
 
         key_names = [k.name for k in load_keys(s)]  # names only, never values
+        checks["openai"] = f"{s.openai_model}" if s.openai_api_key.strip() else "not configured (needs OPENAI_API_KEY)"
         checks["gemini"] = "vertex" if s.gemini_use_vertex else (f"{len(key_names)} key(s): {', '.join(key_names)}" if key_names else "not configured")
         checks["tts"] = s.gemini_tts_model if key_names else "not configured (needs GEMINI_API_KEY_1)"
         checks["dispatch"] = s.dispatch_mode
+        for var, status in emulator_status().items():
+            checks[var.removesuffix("_HOST").lower()] = status
         ok = checks["firestore"] == "ok"
         return JSONResponse(status_code=200 if ok else 503, content={"ready": ok, "checks": checks})
 

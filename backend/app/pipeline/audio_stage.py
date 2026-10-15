@@ -13,7 +13,7 @@ from google.cloud import firestore
 
 from app.ai.client import QUOTA_MESSAGE, AiQuotaExceeded, AiUnavailable
 from app.audio.tts import Turn, line_timings
-from app.logs import get_logger, log
+from app.logs import Timer, exc_fields, get_logger, log
 from app.services import Services
 from app.store import now, stable_id
 
@@ -32,11 +32,15 @@ def voices_for(svc: Services, style: str) -> dict[str, str]:
 
 def synthesize_segment(svc: Services, uid: str, bid: str, sid: str) -> str:
     ref = svc.paths.segment(uid, bid, sid)
+    timer = Timer()
     if not _claim(svc, ref):
+        log(logger, logging.INFO, "segment_audio_skipped", uid=uid, briefingId=bid, segId=sid,
+            reason="already ok, missing, or another worker is processing")
         return "skipped"
     seg = ref.get().to_dict() or {}
     lines = seg.get("script") or []
     if not lines:
+        log(logger, logging.ERROR, "segment_audio_no_script", uid=uid, briefingId=bid, segId=sid)
         ref.update({"audioStatus": "failed", "audioMessage": "This segment has no script yet."})
         return "failed"
     style = seg.get("style", "twoHost")
@@ -45,6 +49,8 @@ def synthesize_segment(svc: Services, uid: str, bid: str, sid: str) -> str:
     turns = [Turn(speaker=names[0] if style == "brief" or line["speaker"] == "A" else names[-1],
                   text=line["text"], style=line.get("style")) for line in lines]
     attempts = int(seg.get("audioAttempts", 0)) + 1
+    log(logger, logging.INFO, "segment_audio_start", uid=uid, briefingId=bid, segId=sid, attempt=attempts, style=style,
+        lines=len(lines), chars=sum(len(t.text) for t in turns), voices=list(voices.values()))
     try:
         speech = svc.tts.synthesize(turns, voices)
     except AiUnavailable as exc:
@@ -62,7 +68,8 @@ def synthesize_segment(svc: Services, uid: str, bid: str, sid: str) -> str:
         if retry:  # retry once with backoff (B9)
             svc.dispatcher.task("segment-audio", {"uid": uid, "briefingId": bid, "segId": sid},
                                 delay_seconds=RETRY_DELAY_SECONDS, dedupe_key=f"audio-{stable_id(uid, bid, sid)}-{attempts}")
-        log(logger, logging.WARNING, "segment_audio_failed", uid=uid, briefingId=bid, segId=sid, attempt=attempts)
+        log(logger, logging.WARNING, "segment_audio_failed", uid=uid, briefingId=bid, segId=sid, attempt=attempts,
+            retrying=retry, quota=quota, category=exc.category, durationMs=timer.ms(), **exc_fields(exc, frames=1))
         return "retrying" if retry else "failed"
 
     path = f"audio/{uid}/{bid}/{sid}.wav"
@@ -79,7 +86,8 @@ def synthesize_segment(svc: Services, uid: str, bid: str, sid: str) -> str:
         "audioUpdatedAt": now(),
     })
     _refresh_briefing_audio(svc, uid, bid)
-    log(logger, logging.INFO, "segment_audio_ready", uid=uid, briefingId=bid, segId=sid, seconds=round(speech.duration_sec))
+    log(logger, logging.INFO, "segment_audio_ready", uid=uid, briefingId=bid, segId=sid, seconds=round(speech.duration_sec),
+        bytes=len(speech.wav), path=path, durationMs=timer.ms())
     return "ok"
 
 
@@ -108,6 +116,27 @@ def retry_segment_audio(svc: Services, uid: str, bid: str, sid: str) -> None:
                         dedupe_key=f"audio-retry-{stable_id(uid, bid, sid, now().isoformat())}")
 
 
+def approve_segment_audio(svc: Services, uid: str, bid: str, sid: str, texts: list[str] | None = None) -> bool:
+    """Review workflow: the user approved this segment's script, so start the existing TTS for it.
+
+    `texts` are the reviewed line texts. When any differ from the generated script, the stored script
+    is replaced by exactly those texts (the original is kept in scriptOriginal and scriptEdited is
+    set), so TTS reads what was approved. Returns whether the script was edited."""
+    ref = svc.paths.segment(uid, bid, sid)
+    seg = ref.get().to_dict() or {}
+    lines = seg.get("script") or []
+    edited = texts is not None and any(t != line["text"] for t, line in zip(texts, lines, strict=True))
+    update: dict = {"audioStatus": "pending", "audioAttempts": 0, "audioMessage": None, "audioUpdatedAt": None}
+    if edited:
+        update |= {"script": [{**line, "text": t} for t, line in zip(texts, lines, strict=True)],
+                   "scriptEdited": True, "scriptOriginal": seg.get("scriptOriginal") or lines}
+    ref.update(update)
+    svc.dispatcher.task("segment-audio", {"uid": uid, "briefingId": bid, "segId": sid},
+                        dedupe_key=f"audio-approve-{stable_id(uid, bid, sid, now().isoformat())}")
+    log(logger, logging.INFO, "segment_audio_approved", uid=uid, briefingId=bid, segId=sid, edited=edited, lines=len(lines))
+    return edited
+
+
 def _refresh_briefing_audio(svc: Services, uid: str, bid: str) -> None:
     segs = [s.to_dict() or {} for s in svc.paths.segments(uid, bid).stream()]
     svc.paths.briefing(uid, bid).update({
@@ -122,8 +151,10 @@ def _refresh_briefing_audio(svc: Services, uid: str, bid: str) -> None:
 def speak_text(svc: Services, uid: str, path: str, text: str, style: str) -> dict:
     """Synthesizes text once and caches it at `path`; returns {url, durationSec}."""
     if svc.blobs.exists(path):
+        log(logger, logging.INFO, "spoken_text_cache_hit", uid=uid, path=path)
         return {"url": svc.blobs.read_url(path)}
     s = svc.settings
+    log(logger, logging.INFO, "spoken_text_synthesize", uid=uid, path=path, chars=len(text), style=style)
     speech = svc.tts.synthesize([Turn(speaker="", text=text, style=style)], {"Tutor": s.tts_answer_voice})
     svc.blobs.put_bytes(path, speech.wav, "audio/wav")
     return {"url": svc.blobs.read_url(path), "durationSec": round(speech.duration_sec, 1)}

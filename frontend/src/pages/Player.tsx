@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { AudioPanel } from '../components/AudioPanel';
+import { LlmPreview, useLlmTrace } from '../components/LlmPreview';
 import { AskPanel } from '../components/checkpoint/AskPanel';
 import { CheckpointSheet, type CheckpointAction } from '../components/checkpoint/CheckpointSheet';
 import { QuizPanel } from '../components/checkpoint/QuizPanel';
@@ -25,6 +26,7 @@ export function Player() {
   const navigate = useNavigate();
   const { user, me } = useAuth();
   const { briefing, error, reload } = useBriefing(user?.uid, briefingId);
+  const trace = useLlmTrace(briefing?.reviewBeforeAudio ? briefingId : undefined, briefing?.status);
 
   const playlist = useMemo(
     () => (briefing?.segments || []).filter((s) => !s.removedByUser && s.status !== 'failed').sort((a, b) => a.order - b.order),
@@ -220,7 +222,7 @@ export function Player() {
 
         {!hasAudio && (
           <div className="mt-4">
-            <AudioPanel briefingId={briefingId} segment={seg} onChanged={reload} />
+            <AudioPanel briefingId={briefingId} segment={seg} trace={trace.trace?.entries} onChanged={reload} />
           </div>
         )}
         {seg.status === 'generating' && <Spinner label="Writing this deeper segment" />}
@@ -255,6 +257,9 @@ export function Player() {
           {seg.sources.map((s) => (
             <SourceChip key={s.itemId} {...s} briefingId={briefingId} segId={seg.id} />
           ))}
+        </div>
+        <div className="mt-6">
+          <LlmPreview trace={trace} />
         </div>
         {seg.faithfulness === 'review' && <p className="mt-3 text-caption text-ink-3">This script was flagged for review against its sources.</p>}
       </div>

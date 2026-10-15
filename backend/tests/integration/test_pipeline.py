@@ -119,7 +119,7 @@ def test_ai_outage_fails_honestly(asha, svc):
     asha.post("/briefings/generate", {})
     b = today(asha)
     assert b["status"] == "failed"
-    assert "Gemini is unavailable" in b["error"]["message"]
+    assert "The AI service is unavailable" in b["error"]["message"]
     assert b["segments"] == []
 
 
@@ -200,3 +200,148 @@ def test_tts_outage_retries_then_falls_back_to_text(asha, svc):
     assert asha.post(f"/briefings/{b['id']}/segments/{s['id']}/audio/retry").status_code == 202
     s = today(asha)["segments"][0]
     assert s["audioStatus"] == "ok" and s["audioUrl"]
+
+
+def test_briefing_runs_through_openai_text_generation_into_the_unchanged_tts(asha, svc):
+    """Real OpenAILLM (mocked OpenAI client) -> real B1-B10 stages -> the existing Gemini TTS boundary."""
+    from app.ai.openai_llm import OpenAILLM
+    from app.config import Settings
+    from tests.fakes import FakeOpenAIClient
+
+    client = FakeOpenAIClient()
+    svc.llm = OpenAILLM(Settings(openai_api_key="sk-test-0123456789abcdef"), client=client)
+    assert asha.post("/briefings/generate", {"kind": "daily"}).status_code == 202
+    b = today(asha)
+    assert b["status"] == "ready", b.get("error")
+
+    # every text-generation request used the configured model
+    assert client.requests and {r["model"] for r in client.requests} == {"gpt-4o-mini"}
+    assert all(r["messages"][0]["role"] == "system" for r in client.requests)
+
+    # the OpenAI-written scripts feed the existing TTS contract: speakers A/B -> Maya/Theo, Kore/Puck voices
+    for s in b["segments"]:
+        assert {line["speaker"] for line in s["script"]} == {"A", "B"}
+        assert s["audioStatus"] == "ok" and s["voices"] == {"Maya": "Kore", "Theo": "Puck"}
+    assert len(svc.tts.calls) == len(b["segments"])
+    for turns, voices in svc.tts.calls:
+        assert voices == {"Maya": "Kore", "Theo": "Puck"} and {t.speaker for t in turns} <= {"Maya", "Theo"}
+
+
+# --- review workflow: see the OpenAI responses, then start TTS by hand ---------------------------------
+
+def _review_setup(svc):
+    from app.ai.openai_llm import OpenAILLM
+    from app.config import Settings
+    from tests.fakes import FakeOpenAIClient
+
+    client = FakeOpenAIClient()
+    svc.llm = OpenAILLM(Settings(openai_api_key="sk-test-0123456789abcdef", openai_max_retries=0), client=client)
+    return client
+
+
+def _generate_for_review(asha, **extra):
+    assert asha.post("/briefings/generate", {"kind": "daily", "reviewBeforeAudio": True, **extra}).status_code == 202
+    return today(asha)
+
+
+def test_review_mode_holds_tts_and_shows_the_exact_openai_responses(asha, svc):
+    client = _review_setup(svc)
+    b = _generate_for_review(asha)
+    assert b["status"] == "ready" and b["reviewBeforeAudio"] is True
+    # nothing was spoken: every segment waits for approval
+    assert svc.tts.calls == [] and {s["audioStatus"] for s in b["segments"]} == {"review"}
+    assert all(s["audioUrl"] is None and s["script"] for s in b["segments"])
+
+    t = asha.get(f"/briefings/{b['id']}/llm-trace").json()
+    assert t["enabled"] is True and t["model"] == "gpt-4o-mini"
+    entries = t["entries"]
+    # exactly one captured entry per API request: the preview made no extra call
+    assert len(entries) == len(client.requests) == len(client.responses)
+    assert [e["rawResponse"] for e in entries] == client.responses  # byte-for-byte what the API returned
+    assert all(e["status"] == "ok" and e["parsed"] is not None for e in entries)
+    assert all(e["usage"] == {"input": 100, "output": 50, "total": 150} and e["model"] == "gpt-4o-mini" for e in entries)
+    steps = {e["step"] for e in entries}
+    assert {"ExtractionResult", "SegmentPlan", "PodcastScript", "FaithfulnessResult"} <= steps
+    scripts = [e for e in entries if e["step"] == "PodcastScript"]
+    assert len(scripts) == len(b["segments"]) and all(e["appValidation"] == {"passed": True, "problems": []} for e in scripts)
+    assert {e["segId"] for e in scripts} == {s["id"] for s in b["segments"]}
+    assert "sk-test" not in str(t)
+
+
+def test_generate_audio_sends_the_exact_reviewed_script_to_the_existing_tts(asha, svc):
+    _review_setup(svc)
+    b = _generate_for_review(asha)
+    seg = b["segments"][0]
+    r = asha.post(f"/briefings/{b['id']}/segments/{seg['id']}/audio/generate", {})
+    assert r.status_code == 202 and r.json() == {"ok": True, "edited": False}
+    after = next(s for s in today(asha)["segments"] if s["id"] == seg["id"])
+    assert after["audioStatus"] == "ok" and after["audioUrl"] and not after.get("scriptEdited")
+    assert len(svc.tts.calls) == 1  # only the approved segment was spoken
+    turns, voices = svc.tts.calls[0]
+    assert [t.text for t in turns] == [line["text"] for line in seg["script"]]
+    assert voices == {"Maya": "Kore", "Theo": "Puck"}
+    # the other segments are still waiting
+    assert {s["audioStatus"] for s in today(asha)["segments"] if s["id"] != seg["id"]} == {"review"}
+
+
+def test_edited_script_is_marked_modified_and_the_edit_is_what_gets_spoken(asha, svc):
+    _review_setup(svc)
+    b = _generate_for_review(asha)
+    seg = b["segments"][0]
+    texts = [line["text"] for line in seg["script"]]
+    texts[1] = "A line I rewrote during review."
+    r = asha.post(f"/briefings/{b['id']}/segments/{seg['id']}/audio/generate", {"texts": texts})
+    assert r.status_code == 202 and r.json()["edited"] is True
+    after = next(s for s in today(asha)["segments"] if s["id"] == seg["id"])
+    assert after["scriptEdited"] is True and after["audioStatus"] == "ok"
+    assert [line["text"] for line in after["script"]] == texts
+    assert [line["text"] for line in after["scriptOriginal"]] == [line["text"] for line in seg["script"]]  # kept for comparison
+    assert [t.text for t in svc.tts.calls[0][0]] == texts
+    # speaker labels are untouched by a text edit
+    assert [line["speaker"] for line in after["script"]] == [line["speaker"] for line in seg["script"]]
+
+
+def test_generate_audio_rejects_bad_requests(asha, svc):
+    _review_setup(svc)
+    b = _generate_for_review(asha)
+    seg = b["segments"][0]
+    url = f"/briefings/{b['id']}/segments/{seg['id']}/audio/generate"
+    assert asha.post(url, {"texts": ["only one"]}).status_code == 400
+    assert asha.post(url, {"texts": [""] * len(seg["script"])}).status_code == 422
+    assert svc.tts.calls == []
+    assert asha.post(url, {}).status_code == 202
+    assert asha.post(url, {}).status_code == 409  # already approved: no duplicate TTS
+    assert len(svc.tts.calls) == 1
+
+
+def test_default_briefing_is_unchanged_and_has_no_trace(asha, svc):
+    assert asha.post("/briefings/generate", {"kind": "daily"}).status_code == 202
+    b = today(asha)
+    assert b["reviewBeforeAudio"] is False and {s["audioStatus"] for s in b["segments"]} == {"ok"}
+    t = asha.get(f"/briefings/{b['id']}/llm-trace").json()
+    assert t == {"enabled": False, "model": "gpt-4o-mini", "entries": []}
+    assert asha.post(f"/briefings/{b['id']}/segments/s1/audio/generate", {}).status_code == 409
+
+
+def test_review_mode_can_come_from_the_server_default(asha, svc):
+    _review_setup(svc)
+    svc.settings.review_before_audio = True
+    assert asha.post("/briefings/generate", {"kind": "daily"}).status_code == 202
+    assert today(asha)["reviewBeforeAudio"] is True and svc.tts.calls == []
+
+
+def test_openai_failure_is_visible_in_the_trace_without_secrets(asha, svc):
+    import httpx
+    import openai
+
+    client = _review_setup(svc)
+    client.fail = openai.AuthenticationError(
+        "Incorrect API key provided: sk-test-0123456789abcdef",
+        response=httpx.Response(401, request=httpx.Request("POST", "https://api.openai.com")), body={"code": "invalid_api_key"})
+    b = _generate_for_review(asha)
+    assert b["status"] == "failed"
+    t = asha.get(f"/briefings/{b['id']}/llm-trace").json()
+    (e,) = t["entries"]
+    assert e["status"] == "request_failed" and e["category"] == "auth" and "OPENAI_API_KEY" in e["error"]
+    assert "sk-test" not in str(t) and "Traceback" not in str(t)
+    assert svc.tts.calls == []

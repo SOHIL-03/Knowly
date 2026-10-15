@@ -4,6 +4,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { Banner, Button, Card } from '../components/ui';
 import { post } from '../lib/api';
+import { LlmPreview, useLlmTrace } from '../components/LlmPreview';
+import { reviewPref } from '../lib/review';
 import { useBriefingProgress } from '../lib/live';
 
 const ORDER = ['queued', 'fetch', 'parse', 'enrich', 'rank', 'plan', 'brief', 'ready'];
@@ -15,6 +17,7 @@ export function Generating() {
   const navigate = useNavigate();
   const live = useBriefingProgress(user?.uid, briefingId);
   const [busy, setBusy] = useState(false);
+  const trace = useLlmTrace(briefingId, `${live?.status}:${live?.progress?.stage}`);
 
   useEffect(() => {
     if (live?.status === 'ready') {
@@ -35,7 +38,7 @@ export function Generating() {
   const retry = async (kind: 'daily' | 'review') => {
     setBusy(true);
     try {
-      const r = await post<{ briefingId: string }>('/briefings/generate', { kind, regenerate: true });
+      const r = await post<{ briefingId: string }>('/briefings/generate', { kind, regenerate: true, reviewBeforeAudio: reviewPref() });
       navigate(`/generating/${encodeURIComponent(r.briefingId)}`, { replace: true });
     } finally {
       setBusy(false);
@@ -87,6 +90,9 @@ export function Generating() {
             </div>
           </Card>
         )}
+      </div>
+      <div className="mt-6 pb-8">
+        <LlmPreview trace={trace} />
       </div>
     </div>
   );

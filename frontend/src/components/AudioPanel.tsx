@@ -1,12 +1,24 @@
 import { RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import { post } from '../lib/api';
+import type { TraceEntry } from '../lib/review';
 import type { Segment } from '../lib/types';
+import { ScriptReview } from './ScriptReview';
 import { Banner, Button, Spinner } from './ui';
 
 /** Shown while a segment has no playable audio. Audio is made by Gemini TTS from the segment's
  * script; the script is readable below the whole time. */
-export function AudioPanel({ briefingId, segment, onChanged }: { briefingId: string; segment: Segment; onChanged: () => void }) {
+export function AudioPanel({
+  briefingId,
+  segment,
+  trace = [],
+  onChanged,
+}: {
+  briefingId: string;
+  segment: Segment;
+  trace?: TraceEntry[];
+  onChanged: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,6 +35,9 @@ export function AudioPanel({ briefingId, segment, onChanged }: { briefingId: str
     }
   };
 
+  if (segment.audioStatus === 'review') {
+    return <ScriptReview key={segment.id} briefingId={briefingId} segment={segment} trace={trace} onChanged={onChanged} />;
+  }
   if (segment.audioStatus === 'failed') {
     return (
       <div className="space-y-2">

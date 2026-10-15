@@ -6,6 +6,7 @@ local emulators and need no credentials.
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 
@@ -15,6 +16,9 @@ from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
 
 from app.config import get_settings
+from app.logs import get_logger, log
+
+logger = get_logger(__name__)
 
 
 def using_emulators() -> bool:
@@ -29,6 +33,8 @@ def firebase_app() -> firebase_admin.App:
         return firebase_admin.get_app()
     except ValueError:
         pass
+    log(logger, logging.INFO, "firebase_app_init", project=s.gcp_project,
+        authEmulator=os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"))
     if os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"):
         # The Auth emulator accepts unsigned tokens; Admin needs no real credential.
         return firebase_admin.initialize_app(credential=_EmulatorCredential(), options=opts)
@@ -43,6 +49,7 @@ class _EmulatorCredential(firebase_admin.credentials.Base):
 @lru_cache
 def firestore_client() -> firestore.Client:
     s = get_settings()
+    log(logger, logging.INFO, "firestore_client_init", project=s.gcp_project, emulator=os.environ.get("FIRESTORE_EMULATOR_HOST"))
     if using_emulators():
         return firestore.Client(project=s.gcp_project, credentials=AnonymousCredentials())
     return firestore.Client(project=s.gcp_project)

@@ -9,12 +9,12 @@ from typing import Any
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.ai import prompts
+from app.ai import prompts, trace
 from app.ai.client import AiOutputInvalid
 from app.ai.schemas import FaithfulnessResult, PlannedSegment, PodcastScript, ScriptLine, SegmentPlan
 from app.learner import model as lm
 from app.learner import service as learner
-from app.logs import get_logger, log
+from app.logs import exc_fields, get_logger, log
 from app.pipeline.score import Scored, Story, UserSignals, rank
 from app.pipeline.validate import render_script_text, repair_plan, script_problems
 from app.services import Services
@@ -83,7 +83,13 @@ def score_stories(svc: Services, uid: str, briefing_id: str, items: list[dict[st
                   clusters: dict[str, tuple[str, int]], wildcard_on: bool) -> tuple[list[Scored], UserSignals]:
     signals = user_signals(svc, uid, briefing_id)
     stories = unique_stories(items, clusters)
-    return rank(stories, signals, now(), wildcard_on=wildcard_on), signals
+    ranked = rank(stories, signals, now(), wildcard_on=wildcard_on)
+    log(logger, logging.INFO, "score_done", uid=uid, briefingId=briefing_id, items=len(items), stories=len(stories),
+        ranked=len(ranked), muted=len(stories) - len(ranked), goals=len(signals.goals), muteTopics=len(signals.mute_topics),
+        knownConcepts=len(signals.known_concepts), heardClusters=len(signals.heard_clusters),
+        hasProject=bool(signals.project_text), hasProjectEmbedding=signals.project_embedding is not None,
+        top=[{"id": r.story.id, "score": round(getattr(r, "score", 0.0), 3)} for r in ranked[:3]])
+    return ranked, signals
 
 
 # --- Review material ---------------------------------------------------------------------
@@ -135,7 +141,7 @@ def level_summary(concepts: list[dict[str, Any]]) -> str:
 
 
 def fallback_plan(ranked: list[Scored], length_seconds: int, wildcard_id: str | None, review_ids: list[str]) -> SegmentPlan:
-    """Deterministic plan used only when Gemini returns an invalid plan twice."""
+    """Deterministic plan used only when the model returns an invalid plan twice."""
     segs: list[PlannedSegment] = []
     news = [s for s in ranked if not s.wildcard]
     if news[:2]:
@@ -170,13 +176,16 @@ def plan_segments(svc: Services, ranked: list[Scored], length_min: int, concepts
                         "category": "review"} for r in review]
     length_seconds = length_min * 60
     mode = "model"
+    log(logger, logging.INFO, "plan_start", candidates=len(candidates), review=len(review), lengthMin=length_min,
+        wildcard=wildcard)
     try:
         plan = svc.llm.generate_json(
             "pro", prompts.PLAN_SYSTEM,
             prompts.plan_prompt(candidates, length_min, level_summary(concepts), wildcard, bool(review)),
             SegmentPlan, temperature=0.3,
         )
-    except AiOutputInvalid:
+    except AiOutputInvalid as exc:
+        log(logger, logging.WARNING, "plan_invalid_using_fallback", candidates=len(candidates), **exc_fields(exc, frames=1))
         plan = fallback_plan(ranked, length_seconds, wildcard, review_ids)
         mode = "fallback"
     check = repair_plan(plan, [s.story.id for s in ranked], length_seconds, wildcard, set(review_ids))
@@ -243,21 +252,30 @@ def write_script(svc: Services, seg: PlannedSegment, items: dict[str, dict[str, 
                                    seg.target_seconds, project_text, hosts)
     allowed = set(seg.item_ids)
     problems: list[str] = []
-    for _ in range(2):
+    for attempt in range(2):
         p = prompt if not problems else f"{prompt}\n\nThe previous script was rejected: {'; '.join(problems)}. Fix it."
         try:
             script = svc.llm.generate_json("pro", prompts.SCRIPT_SYSTEM, p, PodcastScript, temperature=0.4)
         except AiOutputInvalid as exc:
             problems = [str(exc)[:300]]
+            log(logger, logging.WARNING, "script_output_invalid", segTitle=seg.title, attempt=attempt, problems=problems)
             continue
         problems = script_problems(script, allowed, seg.target_seconds, single)
+        trace.annotate("PodcastScript", appValidation={"passed": not problems, "problems": problems[:10]})
         if problems:
+            log(logger, logging.WARNING, "script_rejected", segTitle=seg.title, attempt=attempt, problems=problems[:5])
             continue
         faith = check_faithfulness(svc, script, payload, items, hosts)
+        trace.annotate("PodcastScript", faithfulness=faith["verdict"])
         if faith["verdict"] == "fail":
             problems = [f"unsupported: {c['quote']}" for c in faith["unsupportedClaims"][:5]] or ["unsupported claims"]
+            log(logger, logging.WARNING, "script_unfaithful", segTitle=seg.title, attempt=attempt,
+                unsupported=len(faith["unsupportedClaims"]))
             continue
+        log(logger, logging.INFO, "script_accepted", segTitle=seg.title, attempt=attempt, lines=len(script.lines),
+            faithfulness=faith["verdict"])
         return script, "model", [], faith
+    log(logger, logging.WARNING, "script_using_fallback", segTitle=seg.title, items=len(seg.item_ids), problems=problems[:5])
     fb = fallback_script(seg, items, single)
     return fb, "fallback", problems, {"verdict": "pass", "unsupportedClaims": [], "note": "built from newsletter notes"}
 
@@ -273,7 +291,8 @@ def check_faithfulness(svc: Services, script: PodcastScript, payload: list[dict[
             f"SOURCES:\n<source>\n{json.dumps(payload)}\n</source>\n\nSCRIPT:\n<article>\n{text}\n</article>",
             FaithfulnessResult, temperature=0.0,
         )
-    except AiOutputInvalid:
+    except AiOutputInvalid as exc:
+        log(logger, logging.WARNING, "faithfulness_unchecked", **exc_fields(exc, frames=1))
         return {"verdict": "unchecked", "unsupportedClaims": []}
     return {"verdict": res.verdict, "unsupportedClaims": [c.model_dump() for c in res.unsupported_claims[:10]]}
 

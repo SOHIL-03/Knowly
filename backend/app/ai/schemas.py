@@ -1,6 +1,6 @@
-"""Output contracts for every Gemini call (Architecture v3, section 9).
+"""Output contracts for every text-generation call (Architecture v3, section 9).
 
-These are passed to Gemini as response schemas and validated again before anything is
+These are sent to the model as JSON Schema and validated again before anything is
 stored. Field names follow the document.
 """
 

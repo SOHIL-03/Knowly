@@ -397,7 +397,7 @@ def build_deeper_segment(svc: Services, uid: str, bid: str, sid: str, item_id: s
             seg_type="deeper",
         )
     except AiUnavailable:
-        ref.update({"status": "failed", "audioStatus": "failed", "audioMessage": "Gemini was unavailable."})
+        ref.update({"status": "failed", "audioStatus": "failed", "audioMessage": "The AI service was unavailable."})
         return
     ref.update({
         "status": "ready",
