@@ -130,6 +130,8 @@ class Settings(BaseSettings):
     concept_match_cosine_threshold: float = 0.72
     enrich_timeout_seconds: float = 8.0
     enrich_max_chars: int = 20_000
+    # TLDR story podcast: how many times missing or unsupported script parts are regenerated.
+    tldr_max_repairs: int = 2
 
     @property
     def is_cloud(self) -> bool:

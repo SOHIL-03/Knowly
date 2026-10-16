@@ -158,3 +158,77 @@ CONCEPTS_SYSTEM = (
     "List the technical concepts (2 to 4 words each, lowercase, generic, e.g. 'vector index', "
     "'llm evals') a learner would need to understand these stories. At most 8."
 )
+
+
+MANIFEST_SYSTEM = (
+    "You read one article and list everything a listener must be told so that they would not need to read "
+    "it. Split it into 'points': distinct developments, findings, arguments, steps or decisions, in the "
+    "order of the article. Do not merge unrelated developments and do not drop significant ones to keep the "
+    "list short; omit only repetition, marketing filler and trivia. For every point give: a short topic; "
+    "priority core (a main development or conclusion) or supporting (context, example or background needed "
+    "to understand a core point); key_points (what must be said, faithful to the article, 1 to 3 sentences); "
+    "required_facts (the exact figures, dates, names, quantities and comparisons from the article that belong "
+    "to the point, each a short standalone statement); caveat (any uncertainty, limitation or distinction the "
+    "article states, else null). Use only facts in the ARTICLE, never invent, and keep numbers exactly as written."
+)
+
+
+def manifest_prompt(title: str, text: str) -> str:
+    return f"Article: {title}\n\n<article>\n{text}\n</article>\n\nReturn every point as JSON."
+
+
+INTERVIEW_SYSTEM = (
+    "You write part of a two-person podcast that explains one article. A text-to-speech model reads every "
+    "line word for word, so write only what is said: no stage directions, no markdown, no sound effects. Put "
+    "delivery hints (for example 'curious', 'calm') in the style field. Speaker A is the interviewer: A asks "
+    "the important questions a curious listener would ask (what happened, how it works, why it matters, what "
+    "the numbers or consequences are, what the limits are). Speaker B is the expert guest: B answers each "
+    "question directly. Strict alternation: every A line is a question or a short transition and every B line "
+    "answers the question before it. Use only facts in the ARTICLE, never outside facts, and never invent "
+    "numbers, names or dates; say clearly when the article is uncertain. Do not write a brief summary: discuss "
+    "every point you are given in enough depth that each of its required facts is actually spoken, using the "
+    "exact figures. Every line that states a fact lists the ids of the points it draws on in item_ids. Each "
+    "line must stay under 600 characters."
+)
+
+
+def segment_prompt(*, title: str, text: str, hosts: dict[str, str], outline: list[str], first: bool, last: bool,
+                   points: list[dict[str, Any]], covered_topics: list[str], previous_lines: list[str],
+                   est_words: int, fix: str | None = None) -> str:
+    where = "the only part" if first and last else "the opening part" if first else "the closing part" if last else "a middle part"
+    role = [f"This is {where} of the episode."]
+    role.append("Begin with a one-line welcome that names the article, then go straight into the first point."
+                if first else "Do not welcome the listener again; continue naturally from the previous lines.")
+    role.append("End with a brief recap of the whole episode, return 1 to 8 takeaways, and set the episode title."
+                if last else "Do not conclude, recap or say goodbye; more parts follow. Leave takeaways empty.")
+    parts = [
+        f"Article: {title}",
+        f"Speaker A is {hosts['A']} (interviewer). Speaker B is {hosts['B']} (expert).",
+        "Episode outline: " + " | ".join(f"{n + 1}. {t}" for n, t in enumerate(outline)),
+        " ".join(role),
+        "Points to cover in THIS part (cite each point's id in item_ids):\n" + json.dumps(points, indent=1),
+    ]
+    if covered_topics:
+        parts.append("Already covered in earlier parts, do not repeat: " + "; ".join(covered_topics))
+    if previous_lines:
+        parts.append("Last lines of the previous part:\n" + "\n".join(previous_lines))
+    if fix:
+        parts.append("The previous attempt for this part was incomplete. Fix this: " + fix)
+    parts.append(f"These points normally take about {est_words} spoken words; use more whenever needed so that no "
+                 "required fact is left out.")
+    parts.append(f"<article>\n{text}\n</article>")
+    return "\n\n".join(parts)
+
+
+COVERAGE_SYSTEM = (
+    "You audit a podcast script against the POINTS it must cover and the ARTICLE it must stay faithful to. "
+    "For each point id, list the required facts or key points that the script lines do not state (a fact "
+    "counts as stated when the script says it, even in different words). Also list unsupported lines: line "
+    "numbers whose factual claims the ARTICLE does not support (questions, small talk and transitions are "
+    "fine). Report only real problems; return empty lists when everything is covered and supported."
+)
+
+
+def coverage_prompt(points: list[dict[str, Any]], script_text: str, text: str) -> str:
+    return (f"POINTS:\n{json.dumps(points, indent=1)}\n\nSCRIPT (numbered lines):\n{script_text}\n\n"
+            f"<article>\n{text}\n</article>")

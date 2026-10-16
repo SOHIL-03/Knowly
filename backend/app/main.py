@@ -11,7 +11,7 @@ from app.diagnostics import emulator_status, log_startup
 from app.deps import correlation_middleware, services
 from app.errors import install_error_handlers
 from app.logs import configure_logging
-from app.routes import briefings, checkpoint, internal, library, user
+from app.routes import briefings, checkpoint, internal, library, tldr, user
 from app.services import Services
 
 
@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
         expose_headers=["x-correlation-id"],
     )
 
-    for r in (user.router, briefings.router, checkpoint.router, library.router):
+    for r in (user.router, briefings.router, checkpoint.router, library.router, tldr.router):
         app.include_router(r, prefix="/api")
     app.include_router(internal.router)
 

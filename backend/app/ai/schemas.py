@@ -121,3 +121,39 @@ class Rephrased(BaseModel):
 # Concept extraction for the learner model
 class ConceptCandidates(BaseModel):
     concepts: list[str] = Field(default_factory=list, max_length=8)
+
+
+# --- TLDR story podcast: coverage manifest -> script parts -> coverage check ---------------------
+class CoveragePoint(BaseModel):
+    topic: str = Field(max_length=100)
+    priority: Literal["core", "supporting"] = "core"
+    key_points: str = Field(max_length=800, description="What must be said, faithful to the article, 1 to 3 sentences")
+    required_facts: list[str] = Field(default_factory=list, max_length=10,
+                                      description="Exact figures, dates, names, quantities, comparisons, each a short statement")
+    caveat: str | None = Field(default=None, max_length=300)
+
+
+class CoverageManifest(BaseModel):
+    points: list[CoveragePoint] = Field(min_length=1, max_length=40)
+
+
+class ScriptPart(BaseModel):
+    """One generated part of the episode. Only the last part carries the title and takeaways."""
+    title: str | None = Field(default=None, max_length=120)
+    lines: list[ScriptLine] = Field(min_length=2)
+    takeaways: list[str] = Field(default_factory=list, max_length=8)
+
+
+class MissingCoverage(BaseModel):
+    id: str
+    facts: list[str] = Field(default_factory=list, description="Required facts or key points the script does not state")
+
+
+class UnsupportedLine(BaseModel):
+    line: int
+    reason: str
+
+
+class CoverageReport(BaseModel):
+    missing: list[MissingCoverage] = Field(default_factory=list)
+    unsupported: list[UnsupportedLine] = Field(default_factory=list)

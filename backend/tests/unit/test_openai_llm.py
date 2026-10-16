@@ -400,3 +400,32 @@ def test_trace_prompt_preview_is_truncated():
     finally:
         stop()
     assert len(sink.entries[0]["promptPreview"]) == 1500 and sink.entries[0]["promptChars"] == 5000
+
+
+# --- output-token limit and finish reason (TLDR podcast generation) --------------------------------
+
+def test_output_token_limit_is_sent_and_reported_to_the_callback():
+    client = FakeOpenAI(OK)
+    m, _ = llm(client)
+    seen: list[dict] = []
+    m.generate_json("pro", "sys", "prompt", ConceptCandidates, max_output_tokens=900, on_result=seen.append)
+    assert client.requests[0]["max_completion_tokens"] == 900
+    assert seen == [{"finish": "stop", "usage": {"input": 11, "output": 7, "total": 18}, "attempt": 1}]
+
+
+def test_no_token_cap_is_sent_unless_requested():
+    client = FakeOpenAI(OK)
+    m, _ = llm(client)
+    m.generate_json("pro", "sys", "prompt", ConceptCandidates)
+    assert "max_completion_tokens" not in client.requests[0]
+
+
+@pytest.mark.parametrize("content", ['{"concepts": ["rag", "ve', json.dumps({"concepts": ["rag"]})])
+def test_finishing_on_the_output_limit_is_never_used_and_never_retried(content):
+    from app.ai.client import AiOutputTruncated
+
+    client = FakeOpenAI(completion(content, finish="length"))
+    m, _ = llm(client)
+    with pytest.raises(AiOutputTruncated):
+        m.generate_json("pro", "sys", "prompt", ConceptCandidates, max_output_tokens=50)
+    assert len(client.requests) == 1  # same prompt and cap would truncate again, so the caller must split the work

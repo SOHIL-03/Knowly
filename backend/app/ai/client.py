@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Literal, Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -45,6 +45,11 @@ class AiOutputInvalid(RuntimeError):
     pass
 
 
+class AiOutputTruncated(AiOutputInvalid):
+    """The model stopped because it hit the output-token limit (finish_reason == "length"). The partial
+    output is unusable; callers should ask for less per request (for example split the work)."""
+
+
 class AiSafetyBlocked(AiOutputInvalid):
     """The provider refused the content for safety reasons. Never retried."""
 
@@ -62,7 +67,8 @@ def to_ai_error(err: GeminiError) -> AiUnavailable:
 
 
 class LLM(Protocol):
-    def generate_json(self, tier: Tier, system: str, prompt: str, schema: type[T], *, temperature: float = 0.2) -> T: ...
+    def generate_json(self, tier: Tier, system: str, prompt: str, schema: type[T], *, temperature: float = 0.2,
+                      max_output_tokens: int | None = None, on_result: Callable[[dict], None] | None = None) -> T: ...
     def stream_text(self, tier: Tier, system: str, prompt: str, *, temperature: float = 0.3) -> Iterator[str]: ...
 
 

@@ -1,6 +1,7 @@
 import { Headphones } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { TldrDigest } from '../components/TldrDigest';
 import { Banner, Button, Card } from '../components/ui';
 import { firebaseConfigured, sampleAudioUrl } from '../lib/firebase';
 
@@ -61,6 +62,8 @@ export function Landing() {
         </button>
         <p className="text-center text-caption text-ink-3">The sample needs no inbox access.</p>
       </div>
+
+      <TldrDigest />
     </div>
   );
 }

@@ -19,7 +19,7 @@ from app.logs import Timer, correlation_id, exc_fields, get_logger, log, uid_has
 
 logger = get_logger(__name__)
 
-TASK_NAMES = ("segment-audio", "gmail-debounced", "deeper-segment")
+TASK_NAMES = ("segment-audio", "gmail-debounced", "deeper-segment", "tldr-podcast")
 
 
 class Dispatcher(Protocol):

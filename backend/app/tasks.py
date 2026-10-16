@@ -33,8 +33,15 @@ def handle_deeper_segment(payload: dict[str, Any]) -> None:
                          payload["newSegId"])
 
 
+def handle_tldr_podcast(payload: dict[str, Any]) -> None:
+    from app.tldr.podcast import generate
+
+    generate(get_services(), payload["category"], payload["date"], payload["storyId"])
+
+
 TASK_HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "segment-audio": handle_segment_audio,
     "gmail-debounced": handle_gmail_debounced,
     "deeper-segment": handle_deeper_segment,
+    "tldr-podcast": handle_tldr_podcast,
 }

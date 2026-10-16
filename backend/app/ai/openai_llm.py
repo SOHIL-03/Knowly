@@ -29,6 +29,7 @@ from app.ai import trace
 from app.ai.client import (
     INJECTION_GUARD,
     AiOutputInvalid,
+    AiOutputTruncated,
     AiQuotaExceeded,
     AiSafetyBlocked,
     AiUnavailable,
@@ -166,7 +167,10 @@ class OpenAILLM:
 
     # --- structured ------------------------------------------------------------------------------
 
-    def generate_json(self, tier: Tier, system: str, prompt: str, schema: type[T], *, temperature: float = 0.2) -> T:
+    def generate_json(self, tier: Tier, system: str, prompt: str, schema: type[T], *, temperature: float = 0.2,
+                      max_output_tokens: int | None = None, on_result: Callable[[dict], None] | None = None) -> T:
+        """`max_output_tokens` caps the completion; when the model stops on that cap the partial JSON is not
+        retried but raised as AiOutputTruncated. `on_result` receives {finish, usage, attempt} per response."""
         # `tier` is kept for the LLM protocol; every tier uses the one configured model.
         schema_json = json.dumps(schema.model_json_schema(), separators=(",", ":"))
         system_msg = (
@@ -194,6 +198,7 @@ class OpenAILLM:
                         messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": c}],
                         temperature=temperature,
                         response_format={"type": "json_object"},
+                        **({"max_completion_tokens": max_output_tokens} if max_output_tokens else {}),
                     ),
                 )
             except AiUnavailable as exc:
@@ -215,6 +220,14 @@ class OpenAILLM:
                     "total": getattr(usage, "total_tokens", None),
                 },
             }
+            if on_result:
+                on_result({"finish": finish, "usage": base["usage"], "attempt": attempt + 1})
+            if finish == "length" and max_output_tokens:
+                log(logger, logging.WARNING, "openai_output_truncated", model=self.model, schema=schema.__name__,
+                    maxOutputTokens=max_output_tokens, outputTokens=(base["usage"] or {}).get("output"))
+                trace.record(schema.__name__, **base, rawResponse=getattr(message, "content", None), status="truncated",
+                             error="Output hit the token limit.")
+                raise AiOutputTruncated(f"{schema.__name__} stopped at the {max_output_tokens}-token output limit")
             if finish == "content_filter" or getattr(message, "refusal", None):
                 log(logger, logging.WARNING, "openai_safety_block", model=self.model, schema=schema.__name__, finish=finish)
                 trace.record(schema.__name__, **base, status="blocked", rawResponse=getattr(message, "content", None),
