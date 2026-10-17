@@ -96,11 +96,36 @@ class Paths:
     def library(self, uid: str):
         return self.user(uid).collection("library")
 
+    def feedback(self, uid: str):
+        return self.user(uid).collection("feedback")
+
     def qa(self, uid: str):
         return self.user(uid).collection("qa")
 
     def quizzes(self, uid: str):
         return self.user(uid).collection("quizzes")
+
+    # podcast learning (app/learning): chat, assessments, verified mastery, unverified signals
+    def podcast_chat(self, uid: str, pid: str):
+        return self.user(uid).collection("podcastChats").document(pid).collection("messages")
+
+    def podcast_meta(self, uid: str, pid: str):
+        return self.user(uid).collection("podcastMeta").document(pid)
+
+    def assessments(self, uid: str):
+        return self.user(uid).collection("assessments")
+
+    def mastery(self, uid: str):
+        return self.user(uid).collection("verifiedMastery")
+
+    def mastery_evidence(self, uid: str, cid: str):
+        return self.mastery(uid).document(cid).collection("evidence")
+
+    def learning_signals(self, uid: str):
+        return self.user(uid).collection("learningSignals")
+
+    def learning_summary(self, uid: str):
+        return self.user(uid).collection("learning").document("summary")
 
     def usage(self, uid: str, day: str):
         return self.user(uid).collection("usage").document(day)
@@ -108,6 +133,9 @@ class Paths:
     # server only
     def quiz_secret(self, qid: str):
         return self.db.collection("quizSecrets").document(qid)
+
+    def assessment_secret(self, aid: str):
+        return self.db.collection("assessmentSecrets").document(aid)
 
     def deletion_audit(self, uid_hash: str):
         return self.db.collection("deletionAudit").document(uid_hash)

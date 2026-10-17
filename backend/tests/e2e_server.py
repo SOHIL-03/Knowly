@@ -20,6 +20,7 @@ os.environ["GCP_PROJECT"] = "demo-knowly"
 os.environ["STORAGE_BUCKET"] = "demo-knowly.appspot.com"
 os.environ.setdefault("LOCAL_MEDIA_SIGNING_KEY", "e2e-local-key")
 os.environ["PUBLIC_API_BASE_URL"] = ""
+os.environ["EMBED_DIM"] = "64"  # the fake embedder makes 64-dimensional vectors
 
 import uvicorn  # noqa: E402
 

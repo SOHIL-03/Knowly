@@ -174,6 +174,11 @@ export function Player() {
         setToast('Got it, fewer stories like this');
         continueNext();
         break;
+      case 'knewThis':
+        ev('knewThis', {}, first?.itemId);
+        setToast("Got it, we'll pitch similar stories as familiar");
+        continueNext();
+        break;
       case 'openSource':
         if (first?.url) {
           window.open(first.url, '_blank', 'noopener,noreferrer');

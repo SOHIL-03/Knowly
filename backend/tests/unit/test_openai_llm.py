@@ -295,18 +295,22 @@ def test_stream_without_key_is_a_configuration_error():
 # --- migration completeness -----------------------------------------------------------------------
 
 def test_no_gemini_text_generation_remains_in_the_app():
-    """Gemini is allowed only for embeddings (client.py) and TTS (tts.py); never generate_content."""
+    """Gemini is allowed only for embeddings (client.py), TTS (tts.py) and speech-to-text (stt.py, which sends an audio part
+    and uses generate_content only to transcribe it); never for generating text."""
     from pathlib import Path
 
     app = Path(__file__).resolve().parents[2] / "app"
     users = {}
     for f in app.rglob("*.py"):
         text = f.read_text(encoding="utf-8")
-        assert "generate_content" not in text, f"Gemini text generation call in {f.name}"
+        if f.name == "stt.py":
+            assert "generate_content" in text and "Part.from_bytes" in text, "stt.py must transcribe audio, nothing else"
+        else:
+            assert "generate_content" not in text, f"Gemini text generation call in {f.name}"
         assert "GeminiLLM" not in text, f"GeminiLLM referenced in {f.name}"
         if "google.genai" in text or "from google import genai" in text:
             users[f.name] = True
-    assert set(users) == {"gemini_keys.py", "client.py"}  # key pool factory + embedding config types only
+    assert set(users) == {"gemini_keys.py", "client.py", "stt.py"}  # key pool factory, embedding config types, STT audio types
 
 
 def test_services_wire_openai_for_text_and_leave_embeddings_and_tts_on_gemini(monkeypatch):

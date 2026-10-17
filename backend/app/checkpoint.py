@@ -22,6 +22,7 @@ from app.logs import get_logger, log
 from app.pipeline import personal
 from app.pipeline.enrich import fetch_article
 from app.pipeline.validate import extract_citations
+from app.recommend.feedback import apply_feedback
 from app.services import Services
 from app.store import local_date, now
 
@@ -91,6 +92,7 @@ def record_events(svc: Services, uid: str, events: list[dict[str, Any]]) -> None
         batch.set(svc.paths.events(uid).document(), {**ev, "ts": now()})
     batch.commit()
     learner.apply_events(svc, uid, events)
+    apply_feedback(svc, uid, events)  # facet weights and familiarity (app/recommend/feedback.py)
 
 
 # --- Ask (4.3, 9.4) ---------------------------------------------------------------------------

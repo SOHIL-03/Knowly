@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.ai.client import AiOutputInvalid, AiUnavailable
 from app.logs import get_logger, log
 from app.pipeline.enrich import fetch_article
+from app.recommend.vectors import clean_vector
 from app.services import Services
 from app.store import now, unvec, vec
 
@@ -21,8 +22,16 @@ class ProjectSummary(BaseModel):
     summary: str
 
 
+def _short_list(values: list[str] | None, previous: Any, limit: int = 10) -> list[str]:
+    """The cleaned list, or the previously stored one when the caller did not send this field."""
+    if values is None:
+        return [v for v in previous if isinstance(v, str)] if isinstance(previous, list) else []
+    return [v.strip() for v in values if isinstance(v, str) and v.strip()][:limit]
+
+
 def save_profile(svc: Services, uid: str, project_text: str, readme_url: str | None, goals: list[str],
-                 mute_topics: list[str]) -> dict[str, Any]:
+                 mute_topics: list[str], stack: list[str] | None = None, interests: list[str] | None = None,
+                 expertise: list[str] | None = None) -> dict[str, Any]:
     ref = svc.paths.profile(uid)
     prev = ref.get().to_dict() or {}
     goals = [g.strip() for g in goals if g.strip()][:MAX_GOALS]
@@ -35,6 +44,15 @@ def save_profile(svc: Services, uid: str, project_text: str, readme_url: str | N
         "muteTopics": [m.strip() for m in mute_topics if m.strip()][:30],
         "topicWeights": prev.get("topicWeights") or {},
         "lessLikeThisCounts": prev.get("lessLikeThisCounts") or {},
+        # Declared extras for recommendations; omitted fields keep what was stored.
+        "stack": _short_list(stack, prev.get("stack")),
+        "interests": _short_list(interests, prev.get("interests")),
+        "expertise": _short_list(expertise, prev.get("expertise")),
+        # Facets with their embeddings, learned facet weights and familiarity are kept (app/recommend);
+        # facets are rebuilt from the declarations above on the next briefing.
+        "facets": prev.get("facets") or [],
+        "facetPrefs": prev.get("facetPrefs") or {},
+        "familiarity": prev.get("familiarity") or {},
         "updatedAt": now(),
     }
     ref.set(doc)
@@ -73,7 +91,7 @@ def embed_profile(svc: Services, uid: str) -> str:
     if not texts:
         return "ok" if (want_project or goals or project.get("text")) else "empty"
     try:
-        vecs = svc.embedder.embed(texts, task="query")
+        vecs = [clean_vector(v, svc.settings.embed_dim) for v in svc.embedder.embed(texts, task="query")]
     except AiUnavailable:
         log(logger, logging.WARNING, "profile_embedding_missing", uid=uid)
         return "missing"

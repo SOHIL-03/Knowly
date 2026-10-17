@@ -54,7 +54,7 @@ class SegmentPlan(BaseModel):
 # B8: grounded podcast script, spoken by Gemini multi-speaker TTS (replaces the v3 source brief)
 class ScriptLine(BaseModel):
     speaker: Literal["A", "B"]
-    text: str = Field(min_length=1, max_length=700, description="Exactly what is said; no stage directions")
+    text: str = Field(min_length=1, max_length=2000, description="Exactly what is said; no stage directions. Aim for under 600 characters")
     style: str | None = Field(default=None, max_length=60, description="Delivery note, e.g. 'curious', 'calm'")
     item_ids: list[str] = Field(default_factory=list, description="Items this line draws facts from; empty only for short transitions")
     defines_term: str | None = None
@@ -157,3 +157,51 @@ class UnsupportedLine(BaseModel):
 class CoverageReport(BaseModel):
     missing: list[MissingCoverage] = Field(default_factory=list)
     unsupported: list[UnsupportedLine] = Field(default_factory=list)
+
+
+# --- podcast learning: concepts, Q&A, assessments (app/learning) ---------------------------------------------------------
+
+class ExtractedConcept(BaseModel):
+    name: str = Field(min_length=2, max_length=80, description="Canonical, common name of the concept, singular")
+    domain: str | None = Field(default=None, max_length=40, description="Field that disambiguates a name with several meanings, else null")
+    description: str = Field(min_length=5, max_length=300)
+    importance: Literal["major", "supporting", "mention"]
+    prerequisites: list[str] = Field(default_factory=list, max_length=4, description="Names of other listed concepts needed first")
+    lines: list[int] = Field(min_length=1, max_length=6, description="Numbers of the script lines that discuss the concept")
+
+
+class PodcastConcepts(BaseModel):
+    concepts: list[ExtractedConcept] = Field(max_length=16)
+
+
+class PodcastAnswer(BaseModel):
+    answer: str = Field(min_length=1, max_length=2500, description="Plain spoken-style prose, no markdown")
+    grounded: bool = Field(description="True when the podcast or its source material supports the answer")
+    clarifying_question: str | None = Field(default=None, max_length=300)
+
+
+class AssessmentQuestion(BaseModel):
+    type: Literal["mcq", "explain", "scenario", "compare"]
+    prompt: str = Field(min_length=10, max_length=600)
+    options: list[str] = Field(default_factory=list, max_length=5, description="Multiple choice only: 3 or 4 options")
+    correct_index: int | None = Field(default=None, description="Multiple choice only: index of the single correct option")
+    concept_names: list[str] = Field(min_length=1, max_length=2, description="Names exactly as listed in CONCEPTS")
+    rubric: list[str] = Field(default_factory=list, max_length=6, description="Points a correct free-text answer must make")
+    model_answer: str = Field(default="", max_length=800, description="Free-text questions: a short model answer; may be empty for multiple choice")
+
+
+class AssessmentSet(BaseModel):
+    questions: list[AssessmentQuestion] = Field(min_length=1, max_length=10)
+
+
+class AnswerEvaluation(BaseModel):
+    question_id: str
+    correctness_score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0, description="How sure the evaluator is; low when the answer is vague or ambiguous")
+    feedback: str = Field(max_length=600)
+    evidence: str = Field(default="", max_length=400, description="A short quote copied from the learner's answer that supports the score")
+    misconception: str | None = Field(default=None, max_length=300)
+
+
+class AnswerEvaluations(BaseModel):
+    evaluations: list[AnswerEvaluation]

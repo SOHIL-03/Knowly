@@ -4,6 +4,7 @@ can reach either API. Every test injects fakes or mocked clients instead."""
 import os
 
 os.environ["KNOWLY_DISABLE_DOTENV"] = "1"
+os.environ["EMBED_DIM"] = "64"  # the fake embedder (tests/fakes.py) makes 64-dimensional vectors
 for name in list(os.environ):
     if name == "GEMINI_API_KEY" or name.startswith("GEMINI_API_KEY_") or name == "OPENAI_API_KEY":
         del os.environ[name]

@@ -2,10 +2,15 @@ import { useEffect, useState } from 'react';
 import { TldrPodcast } from './TldrPodcast';
 
 type Story = { id: string; title: string; url: string; summary: string; read_minutes: number | null; sponsored: boolean };
-type Issue = { category: string; date: string; url: string; headline: string; sections: { name: string; emoji: string; stories: Story[] }[] };
+type Section = { id?: string; name: string; emoji: string; stories: Story[] };
+type Issue = { category: string; date: string; url: string; headline: string; sections: Section[] };
 type Digest = { scrapedAt: string; windowHours: number; issues: Issue[] };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Same rule as the server's slugify: "Programming, Design & Data Science" -> "programming-design-data-science". */
+export const sectionId = (sec: Pick<Section, 'id' | 'name'>) =>
+  sec.id || sec.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50).replace(/-+$/, '') || 'section';
 
 /** Latest TLDR stories from a static file written by `python -m app.tldr.export`; no API call. */
 export function TldrDigest() {
@@ -49,10 +54,10 @@ export function TldrDigest() {
                       </a>
                       {s.read_minutes ? <span className="text-caption text-ink-3"> · {s.read_minutes} min</span> : null}
                       <p className="text-caption text-ink-2">{s.summary.length > 220 ? `${s.summary.slice(0, 220)}…` : s.summary}</p>
-                      <TldrPodcast category={issue.category} date={issue.date} story={s.id} />
                     </li>
                   ))}
                 </ul>
+                <TldrPodcast category={issue.category} date={issue.date} section={sectionId(sec)} stories={stories.length} />
               </div>
             );
           })}

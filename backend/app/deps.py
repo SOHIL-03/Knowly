@@ -16,7 +16,6 @@ from app.errors import ApiError
 from app.logs import Timer, correlation_id, exc_fields, get_logger, log
 from app.services import Services, get_services
 
-
 logger = get_logger(__name__)
 QUIET_PATHS = {"/api/health", "/api/ready"}  # polled constantly; logged at DEBUG only
 
@@ -47,6 +46,12 @@ def current_user(authorization: str | None = Header(default=None)) -> CurrentUse
         raise ApiError(401, code, "Your session has expired. Sign in again." if code == "session_expired" else "Sign in to continue")
     provider = (claims.get("firebase") or {}).get("sign_in_provider")
     return CurrentUser(uid=claims["uid"], email=claims.get("email"), anonymous=provider == "anonymous")
+
+
+def optional_user(authorization: str | None = Header(default=None)) -> CurrentUser | None:
+    """The signed-in caller when a bearer token is sent (it must then be valid), else None. For endpoints that work for
+    everyone but personalise for signed-in users."""
+    return current_user(authorization) if authorization else None
 
 
 def services() -> Services:

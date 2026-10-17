@@ -1,0 +1,800 @@
+{
+ "description": "50 hand-labelled newsletter stories and two user profiles for the offline recommendation evaluation. Labels were written by the author of the evaluation, per profile: relevant (would clearly want it), adjacent (related, useful context), irrelevant. A story with muteTags is primarily about a topic that some profiles mute; incidentalMentions only mention a topic in passing. Stories sharing a dupGroup are the same news from two newsletters.",
+ "profiles": {
+  "A": {
+   "name": "RAG developer (Python, Gemini, PostgreSQL, pgvector)",
+   "project": {
+    "text": "Building a RAG chatbot using Python"
+   },
+   "stack": [
+    "Gemini, PostgreSQL, and pgvector"
+   ],
+   "goals": [
+    {
+     "topic": "LLM evaluation"
+    }
+   ],
+   "expertise": [
+    "Python backend development"
+   ],
+   "muteTopics": [
+    "Cryptocurrency news",
+    "Startup funding announcements"
+   ],
+   "muteTags": [
+    "crypto",
+    "funding"
+   ]
+  },
+  "B": {
+   "name": "AI agent learner (tool calling, orchestration, evaluation)",
+   "goals": [
+    {
+     "topic": "Tool calling for LLM agents"
+    },
+    {
+     "topic": "Agent orchestration and evaluation"
+    }
+   ],
+   "interests": [
+    "Multi-agent systems"
+   ],
+   "muteTopics": [
+    "Cryptocurrency news",
+    "Smartphone reviews"
+   ],
+   "muteTags": [
+    "crypto",
+    "smartphone"
+   ]
+  }
+ },
+ "stories": [
+  {
+   "id": "n01",
+   "headline": "pgvector 0.8 adds iterative index scans for filtered similarity search",
+   "blurb": "The release keeps HNSW scans going until enough rows pass your WHERE clause, fixing the empty-result problem for filtered vector queries in PostgreSQL.",
+   "category": "tooling",
+   "entities": [
+    "pgvector",
+    "PostgreSQL",
+    "HNSW"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n02",
+   "headline": "Hybrid search in PostgreSQL: full-text plus vector retrieval for RAG",
+   "blurb": "A walkthrough of combining tsvector ranking with embedding similarity using reciprocal rank fusion, with Python examples.",
+   "category": "tooling",
+   "entities": [
+    "PostgreSQL",
+    "RAG",
+    "reciprocal rank fusion"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n03",
+   "headline": "Chunking strategies compared for retrieval pipelines",
+   "blurb": "Fixed-size, sentence-aware and semantic chunking are benchmarked on question answering over technical docs; chunk overlap matters less than expected.",
+   "category": "tooling",
+   "entities": [
+    "chunking",
+    "retrieval"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n04",
+   "headline": "Choosing embedding dimensions and task types for Gemini embeddings",
+   "blurb": "Smaller output dimensions cut storage with little recall loss, and the retrieval query and document task types improve matching.",
+   "category": "tooling",
+   "entities": [
+    "Gemini",
+    "embeddings"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n05",
+   "headline": "Streaming answers from a Python RAG chatbot with FastAPI",
+   "blurb": "Server-sent events let a retrieval-augmented chatbot show tokens as they arrive; the post covers cancellation and citations.",
+   "category": "tooling",
+   "entities": [
+    "FastAPI",
+    "RAG",
+    "Python"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n06",
+   "headline": "Second-pass scoring of search hits: small specialist models versus asking a chatbot to judge",
+   "blurb": "Re-scoring the top results with a purpose-built model is cheaper and often more accurate than prompting a general assistant to grade each passage.",
+   "category": "tooling",
+   "entities": [
+    "reranking",
+    "search"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n07",
+   "headline": "Why chatbots that look things up still make things up",
+   "blurb": "Most wrong answers trace back to the lookup step returning the wrong passages, not to the writing step; showing sources helps users spot them.",
+   "category": "tooling",
+   "entities": [
+    "retrieval",
+    "hallucination",
+    "citations"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n08",
+   "headline": "HNSW or IVFFlat? Index showdown for pgvector on PostgreSQL",
+   "blurb": "Benchmarks on one million vectors show HNSW wins on recall and latency while IVFFlat builds faster.",
+   "category": "tooling",
+   "entities": [
+    "pgvector",
+    "HNSW",
+    "IVFFlat"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   },
+   "dupGroup": "d1"
+  },
+  {
+   "id": "n09",
+   "headline": "pgvector benchmarks: HNSW against IVFFlat indexes in Postgres",
+   "blurb": "A new benchmark compares HNSW and IVFFlat on one million vectors: HNSW has better recall and latency, IVFFlat indexes build faster.",
+   "category": "tooling",
+   "entities": [
+    "pgvector",
+    "HNSW",
+    "IVFFlat"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   },
+   "dupGroup": "d1"
+  },
+  {
+   "id": "n10",
+   "headline": "A practical guide to LLM evaluation: golden datasets and judging answers",
+   "blurb": "How to build a small labelled set, choose metrics and decide when an automated judge can be trusted.",
+   "category": "tooling",
+   "entities": [
+    "LLM evaluation",
+    "golden dataset"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n11",
+   "headline": "LLM-as-judge pitfalls: position bias and verbosity bias",
+   "blurb": "Automated graders favour longer answers and the first option; calibration against human labels reduces the effect.",
+   "category": "tooling",
+   "entities": [
+    "LLM-as-judge"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n12",
+   "headline": "Evaluating agent trajectories: tool-use success and recovery from errors",
+   "blurb": "Beyond final answers, the article scores each step an agent takes and whether it recovers after a failed tool call.",
+   "category": "tooling",
+   "entities": [
+    "agents",
+    "evaluation",
+    "tool use"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n13",
+   "headline": "Catching quality regressions when you edit a prompt",
+   "blurb": "Replay saved example questions after every wording change so a drop in answer quality fails the build before users notice.",
+   "category": "tooling",
+   "entities": [
+    "regression testing",
+    "prompts"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n14",
+   "headline": "Letting a model trigger your code: designing the interface it sees",
+   "blurb": "Precise parameter descriptions and structured error replies help a language model use external operations without guessing.",
+   "category": "tooling",
+   "entities": [
+    "interfaces",
+    "language models"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n15",
+   "headline": "Why language models call the wrong API",
+   "blurb": "Vague names and overlapping descriptions make a model choose the wrong operation; trimming the menu offered at each step fixes most mistakes.",
+   "category": "tooling",
+   "entities": [
+    "API calls",
+    "language models"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n16",
+   "headline": "Coordinating several AI assistants that each own a subtask",
+   "blurb": "A lead assistant splits the work, hands pieces to specialists and merges what comes back; the article walks through the message flow.",
+   "category": "tooling",
+   "entities": [
+    "assistants",
+    "coordination"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n17",
+   "headline": "Agent frameworks compared: LangGraph, CrewAI and plain Python loops",
+   "blurb": "Three ways to build an agent loop are compared on debuggability, state handling and lines of code.",
+   "category": "tooling",
+   "entities": [
+    "LangGraph",
+    "CrewAI"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n18",
+   "headline": "How AI helpers plan ahead and remember: an architecture survey",
+   "blurb": "The survey groups designs by how a system plans its steps, stores what happened and reflects on the results.",
+   "category": "tooling",
+   "entities": [
+    "planning",
+    "memory"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n19",
+   "headline": "MCP servers: a standard way for agents to reach tools and data",
+   "blurb": "The Model Context Protocol defines how an agent discovers and calls tools exposed by a server.",
+   "category": "tooling",
+   "entities": [
+    "MCP",
+    "agents",
+    "tools"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   }
+  },
+  {
+   "id": "n20",
+   "headline": "Keeping autonomous AI workers inside safe limits",
+   "blurb": "Scoped credentials, trial runs and approval steps limit the damage when an automated assistant acts on its own.",
+   "category": "tooling",
+   "entities": [
+    "safety",
+    "permissions"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "adjacent"
+   }
+  },
+  {
+   "id": "n21",
+   "headline": "Why multi-agent systems fail: coordination and lost context",
+   "blurb": "Failure analysis of multi-agent LLM setups shows handoff errors and conflicting goals dominate.",
+   "category": "tooling",
+   "entities": [
+    "multi-agent",
+    "failures"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   },
+   "dupGroup": "d2"
+  },
+  {
+   "id": "n22",
+   "headline": "Multi-agent LLM systems break down on coordination, new study finds",
+   "blurb": "A new study of multi-agent LLM setups reports that handoff errors and conflicting goals are the main causes of failure.",
+   "category": "tooling",
+   "entities": [
+    "multi-agent",
+    "failures"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   },
+   "dupGroup": "d2"
+  },
+  {
+   "id": "n23",
+   "headline": "FastAPI gets faster dependency injection and lifespan improvements",
+   "blurb": "The release speeds up dependency resolution and simplifies startup and shutdown hooks for Python services.",
+   "category": "tooling",
+   "entities": [
+    "FastAPI",
+    "Python"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n24",
+   "headline": "Python free-threaded build: what backend developers should know",
+   "blurb": "Running without the GIL helps CPU-bound threads, but extension modules and libraries need to be checked first.",
+   "category": "tooling",
+   "entities": [
+    "Python",
+    "GIL"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n25",
+   "headline": "Async SQLAlchemy patterns for high-throughput Python services",
+   "blurb": "Session scoping, connection pooling and batching keep async database access fast and safe.",
+   "category": "tooling",
+   "entities": [
+    "SQLAlchemy",
+    "Python",
+    "PostgreSQL"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n26",
+   "headline": "Kubernetes release adds gateway API and sidecar updates",
+   "blurb": "Cluster operators get stable gateway routing and better sidecar lifecycle handling for the orchestration of container workloads.",
+   "category": "tooling",
+   "entities": [
+    "Kubernetes",
+    "orchestration"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n27",
+   "headline": "Terraform or Pulumi: infrastructure as code for small teams",
+   "blurb": "A comparison of languages, state handling and drift detection for teams without a platform group.",
+   "category": "tooling",
+   "entities": [
+    "Terraform",
+    "Pulumi"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n28",
+   "headline": "Rust new edition stabilises async closures",
+   "blurb": "The edition also tidies lifetime rules and adds new diagnostics for common borrow errors.",
+   "category": "tooling",
+   "entities": [
+    "Rust"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n29",
+   "headline": "WebAssembly components reach a stable release",
+   "blurb": "The component model lets modules written in different languages call each other through typed interfaces.",
+   "category": "tooling",
+   "entities": [
+    "WebAssembly"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n30",
+   "headline": "CSS container queries now work in every major browser",
+   "blurb": "Components can respond to the size of their container instead of the viewport.",
+   "category": "tooling",
+   "entities": [
+    "CSS"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n31",
+   "headline": "Gemini crypto exchange launches staking for institutional clients",
+   "blurb": "The exchange adds staking products and custody services for funds that hold digital assets.",
+   "category": "crypto",
+   "entities": [
+    "Gemini",
+    "staking"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "crypto"
+   ]
+  },
+  {
+   "id": "n32",
+   "headline": "RAG status reports: red, amber, green dashboards for project managers",
+   "blurb": "How to colour-code project health and keep stakeholders informed without drowning them in detail.",
+   "category": "other",
+   "entities": [
+    "RAG status",
+    "project management"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n33",
+   "headline": "Real estate agents adopt virtual tours to speed up sales",
+   "blurb": "Agents report fewer wasted viewings after publishing three-dimensional walkthroughs of listings.",
+   "category": "other",
+   "entities": [
+    "real estate",
+    "virtual tours"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n34",
+   "headline": "How to run a fair performance evaluation for your engineering team",
+   "blurb": "Set goals early, collect peer feedback and avoid recency bias in annual reviews.",
+   "category": "other",
+   "entities": [
+    "performance evaluation",
+    "management"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n35",
+   "headline": "Vector graphics: SVG animation techniques for web designers",
+   "blurb": "Path morphing, stroke drawing and masks bring icons to life without video files.",
+   "category": "tooling",
+   "entities": [
+    "SVG",
+    "animation"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n36",
+   "headline": "Python snakes: ball python population study tracks decline",
+   "blurb": "Field researchers tagged hundreds of ball pythons to measure how habitat loss affects the species.",
+   "category": "other",
+   "entities": [
+    "ball python",
+    "conservation"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n37",
+   "headline": "Postgres or MySQL for small business accounting software",
+   "blurb": "A practical comparison of transactions, tooling and hosting costs for bookkeeping apps.",
+   "category": "tooling",
+   "entities": [
+    "PostgreSQL",
+    "MySQL"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n38",
+   "headline": "AI trading agents manage crypto portfolios as the startup raises $40M",
+   "blurb": "An agent-based trading startup announced a $40 million round to run automated cryptocurrency portfolios.",
+   "category": "crypto",
+   "entities": [
+    "AI agents",
+    "crypto",
+    "funding"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "crypto",
+    "funding"
+   ]
+  },
+  {
+   "id": "n39",
+   "headline": "Bitcoin ETF inflows hit a record as prices climb",
+   "blurb": "Spot funds took in more than a billion dollars in a week while the token price reached a new high.",
+   "category": "crypto",
+   "entities": [
+    "Bitcoin",
+    "ETF"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "crypto"
+   ]
+  },
+  {
+   "id": "n40",
+   "headline": "Ethereum upgrade lowers fees for layer-2 rollups",
+   "blurb": "The change makes posting rollup data cheaper, which should reduce transaction costs for users.",
+   "category": "crypto",
+   "entities": [
+    "Ethereum",
+    "rollups"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "crypto"
+   ]
+  },
+  {
+   "id": "n41",
+   "headline": "Series B: AI infrastructure startup raises $120M led by major investors",
+   "blurb": "The round values the company at over a billion dollars and will fund hiring and new data centres.",
+   "category": "business",
+   "entities": [
+    "funding",
+    "Series B"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "funding"
+   ]
+  },
+  {
+   "id": "n42",
+   "headline": "Vector database startup closes $60M funding round",
+   "blurb": "The company behind a hosted vector search service announced new funding to expand its cloud regions.",
+   "category": "business",
+   "entities": [
+    "vector database",
+    "funding"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "funding"
+   ]
+  },
+  {
+   "id": "n43",
+   "headline": "Latest flagship smartphone reviewed: camera and battery tests",
+   "blurb": "Our lab tests show strong low-light photos and a battery that lasts a full day and a half.",
+   "category": "consumer",
+   "entities": [
+    "smartphone",
+    "review"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "smartphone"
+   ]
+  },
+  {
+   "id": "n44",
+   "headline": "Budget phone roundup: the best handsets under $300",
+   "blurb": "Five affordable smartphones compared on screen, speed and software support.",
+   "category": "consumer",
+   "entities": [
+    "smartphone",
+    "budget"
+   ],
+   "labels": {
+    "A": "irrelevant",
+    "B": "irrelevant"
+   },
+   "muteTags": [
+    "smartphone"
+   ]
+  },
+  {
+   "id": "n45",
+   "headline": "pgvector adds binary quantization; sponsors include startup funding programs",
+   "blurb": "The extension can now store binary-quantized vectors for smaller indexes. Maintainers thanked their sponsors, including two startup funding programs.",
+   "category": "tooling",
+   "entities": [
+    "pgvector",
+    "quantization",
+    "PostgreSQL"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "irrelevant"
+   },
+   "incidentalMentions": [
+    "funding"
+   ]
+  },
+  {
+   "id": "n46",
+   "headline": "Building agents that call tools: lessons from a team that used to build crypto wallets",
+   "blurb": "An engineering team explains how they moved from wallet software to agents with reliable tool calling.",
+   "category": "tooling",
+   "entities": [
+    "agents",
+    "tool calling"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   },
+   "incidentalMentions": [
+    "crypto"
+   ]
+  },
+  {
+   "id": "n47",
+   "headline": "Parallel tool calls: how LLM agents run several functions at once",
+   "blurb": "Agent loops can issue independent tool calls together; the post shows batching, ordering and error handling.",
+   "category": "tooling",
+   "entities": [
+    "tool calling",
+    "agents",
+    "parallelism"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   },
+   "dupGroup": "d3"
+  },
+  {
+   "id": "n48",
+   "headline": "Running multiple tool calls in parallel inside agent loops",
+   "blurb": "Independent function calls can be issued together by an agent; this guide covers batching, ordering and handling errors.",
+   "category": "tooling",
+   "entities": [
+    "tool calling",
+    "agents",
+    "parallelism"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "relevant"
+   },
+   "dupGroup": "d3"
+  },
+  {
+   "id": "n49",
+   "headline": "Cheaper long prompts: reusing the shared prefix across requests",
+   "blurb": "Providers can reuse the processed beginning of a prompt, cutting latency and cost for applications that attach large document excerpts to every question.",
+   "category": "tooling",
+   "entities": [
+    "prompt caching",
+    "long context"
+   ],
+   "labels": {
+    "A": "adjacent",
+    "B": "irrelevant"
+   }
+  },
+  {
+   "id": "n50",
+   "headline": "Synthetic test data for evaluating retrieval systems",
+   "blurb": "Generate questions from your own documents to measure recall without hand labelling.",
+   "category": "tooling",
+   "entities": [
+    "retrieval evaluation",
+    "synthetic data"
+   ],
+   "labels": {
+    "A": "relevant",
+    "B": "adjacent"
+   }
+  }
+ ]
+}

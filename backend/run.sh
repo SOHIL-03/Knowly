@@ -83,4 +83,4 @@ else
 fi
 
 echo "Knowly API on http://$HOST:$PORT  (this machine: http://localhost:$PORT/api/docs, ready check: /api/ready)"
-exec python -m uvicorn app.main:app --reload --host "$HOST" --port "$PORT"
+exec python -m uvicorn app.main:app --reload --reload-dir app --host "$HOST" --port "$PORT"

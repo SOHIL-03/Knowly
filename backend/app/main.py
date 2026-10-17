@@ -7,11 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.diagnostics import emulator_status, log_startup
 from app.deps import correlation_middleware, services
+from app.diagnostics import emulator_status, log_startup
 from app.errors import install_error_handlers
 from app.logs import configure_logging
-from app.routes import briefings, checkpoint, internal, library, tldr, user
+from app.routes import briefings, checkpoint, internal, library, podcasts, tldr, user, waitlist
 from app.services import Services
 
 
@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
         expose_headers=["x-correlation-id"],
     )
 
-    for r in (user.router, briefings.router, checkpoint.router, library.router, tldr.router):
+    for r in (user.router, briefings.router, checkpoint.router, library.router, tldr.router, podcasts.router, waitlist.router):
         app.include_router(r, prefix="/api")
     app.include_router(internal.router)
 

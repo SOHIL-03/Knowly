@@ -100,7 +100,14 @@ class Settings(BaseSettings):
     # --- Audio: Gemini text-to-speech (ai.google.dev/gemini-api/docs/speech-generation) ----
     # Podcast segments use multi-speaker TTS (at most 2 prebuilt voices); spoken answers to the
     # listener's questions use single-speaker TTS. TTS uses the Gemini API (GEMINI_API_KEY).
+    # A Gemini request that has not answered after this long counts as failed, so a hung key moves on to the next key
+    # instead of stalling forever. A 2,500-character speech chunk normally takes well under a minute.
+    gemini_timeout_seconds: float = 120.0
     gemini_tts_model: str = "gemini-3.8-flash-tts"
+    # Speech-to-text for the podcast page's voice questions (Gemini audio understanding). Answers stay on OpenAI.
+    gemini_stt_model: str = "gemini-3.5-transcribe"  # dedicated transcription model; general models invent text from silence
+    stt_max_bytes: int = 900_000  # a recording must fit the request-size limit (max_request_bytes)
+    daily_limit_stt: int = 60
     tts_host_a_name: str = "Maya"
     tts_host_a_voice: str = "Kore"  # Firm
     tts_host_b_name: str = "Theo"
@@ -108,6 +115,8 @@ class Settings(BaseSettings):
     tts_answer_voice: str = "Sulafat"  # Warm
     # Lines are sent in chunks of about this many characters and the WAV parts are joined.
     tts_chunk_chars: int = 2500
+    # Podcast audio chunks synthesized at the same time (a long episode is many ~1 minute Gemini calls). 1 = one after another.
+    tts_concurrency: int = 3
     daily_limit_tts: int = 120
 
     # --- Gmail --------------------------------------------------------------------------
@@ -132,6 +141,58 @@ class Settings(BaseSettings):
     enrich_max_chars: int = 20_000
     # TLDR story podcast: how many times missing or unsupported script parts are regenerated.
     tldr_max_repairs: int = 2
+    # TLDR section podcast: at most this many stories of one section are read and discussed.
+    tldr_section_max_stories: int = 8
+
+    # --- Semantic recommendations (app/recommend). Deterministic ranking from embeddings only: no LLM
+    # call scores, classifies, reranks or explains a story. Off = the original B6 scorer.
+    rec_enabled: bool = True
+    rec_ranking_version: str = "semantic-v1"
+    rec_final_count: int = 12  # stories recommended per briefing (a wildcard is added on top)
+    # Initial weight of each declared interest facet type. Feedback adjusts these within the bounds below.
+    rec_weight_project: float = 1.0
+    rec_weight_goal: float = 0.85
+    rec_weight_stack: float = 0.8
+    rec_weight_interest: float = 0.7
+    rec_weight_expertise: float = 0.5
+    rec_weight_min: float = 0.1
+    rec_weight_max: float = 1.5
+    rec_secondary_min_ratio: float = 0.85  # other facets within this share of the best score are kept as matches
+    rec_secondary_max: int = 2
+    rec_novelty_weight: float = 0.15  # share of the final score; capped at 0.3 so novelty never outweighs relevance
+    rec_heard_penalty: float = 0.25  # same story cluster in the last 7 briefings (normalized score units)
+    rec_mmr_lambda: float = 0.7  # 1.0 = pure relevance, lower = more diversity
+    rec_duplicate_threshold: float = 0.93  # story-to-story cosine at which two stories count as the same story
+    # Mutes. A story's cosine to a muted topic is measured as a gap above the median cosine of today's candidates
+    # to that topic, because absolute cosines differ by topic phrasing and by embedding model (for
+    # gemini-embedding-001 at 768 dimensions, on-topic stories sat about +0.10 to +0.18 above the median and
+    # unrelated ones at most +0.07 in recsys_eval; recalibrate when the model or EMBED_DIM changes, see README).
+    rec_mute_exclude_gap: float = 0.11  # at or above: the story is mainly about the muted topic, so it is dropped
+    rec_mute_penalty_gap: float = 0.06  # between this and the exclude gap: graded penalty
+    rec_mute_baseline: float = 0.54  # stand-in for the median when there are fewer than rec_mute_min_candidates stories
+    rec_mute_min_candidates: int = 8
+    rec_mute_penalty: float = 0.6
+    rec_mute_incidental_penalty: float = 0.1  # muted phrase appears only in the blurb (not headline, category or entities)
+    rec_wildcard_enabled: bool = True
+    rec_wildcard_min_relevance: float = 0.25  # normalized relevance a wildcard must still have
+    # A story gets a "matches your ..." explanation only when its normalized relevance is at least this.
+    rec_explain_min_relevance: float = 0.4
+    # Story embeddings: document text = headline + blurb + article intro; embeddings are cached on the item.
+    rec_excerpt_chars: int = 600
+    rec_embed_batch_size: int = 50
+    rec_embed_max_retries: int = 2  # extra attempts for transient (non-quota) errors
+    rec_embed_backoff_seconds: float = 1.0  # doubles on every retry
+    rec_embed_timeout_seconds: float = 30.0  # overall budget for the embedding step, retries included
+    rec_embed_price_per_million_tokens: float | None = None  # only used to estimate cost in logs and the evaluation
+    # Feedback: how much one action moves the matched facet's learned weight (declared weights never change).
+    rec_feedback_save: float = 0.10
+    rec_feedback_ask: float = 0.05
+    rec_feedback_deeper: float = 0.08
+    rec_feedback_less: float = -0.15
+    rec_feedback_max_delta: float = 0.5  # bound on the learned adjustment, up or down
+    rec_feedback_half_life_days: float = 30.0
+    rec_knew_step: float = 0.25  # "Knew this already": familiarity added to the story's topics
+    rec_familiarity_cap: float = 0.6
 
     @property
     def is_cloud(self) -> bool:

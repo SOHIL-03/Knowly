@@ -16,6 +16,7 @@ from app.ai.client import QUOTA_MESSAGE, AiQuotaExceeded, AiUnavailable
 from app.learner import service as learner
 from app.logs import Timer, correlation_id, exc_fields, get_logger, log, uid_hash
 from app.pipeline import ingest, personal
+from app.recommend.service import prepare_profile, ranked_payload, ranking_mode
 from app.services import Services
 from app.store import DEFAULT_PREFS, local_date, now, stable_id
 
@@ -171,6 +172,7 @@ def _run(svc: Services, uid: str, bid: str, owner: str) -> str:
         from app.profile import embed_profile
 
         embed_profile(svc, uid)  # fills embeddings that were missing when the profile was saved
+        prepare_profile(svc, uid)  # interest facets (project, goals, mutes ...) with cached embeddings
         ranked, signals = personal.score_stories(svc, uid, bid, items, clusters, bool(prefs.get("wildcardOn", True)))
         prog.timed("rank", t)
         review, _ = personal.due_review_material(svc, uid, now(), recent_saves=(kind == "review"))
@@ -264,6 +266,8 @@ def _run(svc: Services, uid: str, bid: str, owner: str) -> str:
                 "clusterIds": cluster_ids,
                 "alsoInInbox": also,
                 "recap": {"takeaways": personal.recap_takeaways(scripts), "quizScore": None, "savedCount": 0},
+                "ranked": ranked_payload(ranked),
+                "rankingMode": ranking_mode(ranked),
                 "planMode": plan_mode,
                 "planProblems": plan_problems[:10],
                 "dedupeMode": dedupe_mode,

@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { sectionId } from './TldrDigest';
 import { PodcastView, type PodcastState, type Report } from './TldrPodcast';
 
 const report = (over: Partial<Report> = {}): Report => ({
@@ -57,5 +58,47 @@ describe('PodcastView', () => {
     const html = renderToStaticMarkup(<PodcastView state={{ status: 'failed', message: 'Audio part 2 failed', lines, report: report() }} />);
     expect(html).toContain('Audio part 2 failed');
     expect(html).toContain('It flew over five cars.');
+  });
+
+  it('lists the stories a section podcast covers, in order', () => {
+    const sources = [
+      { id: 's1', title: 'Tesla Roadster flies', url: 'https://a.example/1', basis: 'article' as const },
+      { id: 's2', title: 'Muse Spark Open', url: 'https://a.example/2', basis: 'article' as const },
+    ];
+    const html = renderToStaticMarkup(<PodcastView state={ready({ sectionName: 'Big Tech & Startups', basis: 'article', sources })} />);
+    expect(html).toContain('Covers 2 stories, in this order:');
+    expect(html).toContain('Tesla Roadster flies · Muse Spark Open');
+    expect(html).not.toContain('short summar');
+  });
+
+  it('names the stories that fell back to the short summary when only some articles could be opened', () => {
+    const sources = [
+      { id: 's1', title: 'Opened story', url: 'https://a.example/1', basis: 'article' as const },
+      { id: 's2', title: 'Paywalled story', url: 'https://a.example/2', basis: 'summary' as const },
+    ];
+    const html = renderToStaticMarkup(<PodcastView state={ready({ basis: 'mixed', sources })} />);
+    expect(html).toContain('use TLDR&#x27;s short summary: Paywalled story.');
+    expect(html).not.toContain('Opened story.</');
+  });
+
+  it('notes stories left out by the per-section limit', () => {
+    const sources = [{ id: 's1', title: 'One', url: 'https://a.example/1', basis: 'article' as const }];
+    const html = renderToStaticMarkup(<PodcastView state={ready({ sources, report: report({ omittedStories: 3 }) })} />);
+    expect(html).toContain('Covers 1 story');
+    expect(html).toContain('3 more not included');
+  });
+});
+
+describe('sectionId', () => {
+  it('matches the server slug for the TLDR section names', () => {
+    expect(sectionId({ name: 'Big Tech & Startups' })).toBe('big-tech-startups');
+    expect(sectionId({ name: 'Science & Futuristic Technology' })).toBe('science-futuristic-technology');
+    expect(sectionId({ name: 'Programming, Design & Data Science' })).toBe('programming-design-data-science');
+    expect(sectionId({ name: '???' })).toBe('section');
+    expect(sectionId({ name: 'x'.repeat(80) })).toHaveLength(50);
+  });
+
+  it('prefers the id the server sent', () => {
+    expect(sectionId({ id: 'same-name-2', name: 'Same name' })).toBe('same-name-2');
   });
 });

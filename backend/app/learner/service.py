@@ -13,6 +13,7 @@ from google.cloud.firestore_v1.vector import Vector
 from app.ai.client import AiUnavailable, cosine
 from app.learner import model as lm
 from app.logs import get_logger, log
+from app.recommend.vectors import clean_vector
 from app.services import Services
 from app.store import now, slug, unvec, vec
 
@@ -79,7 +80,7 @@ def match_or_create(
     existing = load_concepts(svc, uid)
     by_slug = {slug(c["name"]): c["id"] for c in existing}
     try:
-        embs = svc.embedder.embed(names, task="query")
+        embs = [clean_vector(e, svc.settings.embed_dim) for e in svc.embedder.embed(names, task="query")]
     except AiUnavailable:
         embs = [None] * len(names)
     out: list[str] = []
@@ -104,7 +105,7 @@ def match_or_create(
 def save_level_check(svc: Services, uid: str, ratings: list[tuple[str, str]]) -> list[str]:
     names = [n for n, _ in ratings]
     try:
-        embs = svc.embedder.embed(names, task="query")
+        embs = [clean_vector(e, svc.settings.embed_dim) for e in svc.embedder.embed(names, task="query")]
     except AiUnavailable:
         embs = [None] * len(names)
     ids = []

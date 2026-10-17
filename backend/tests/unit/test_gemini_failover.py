@@ -128,13 +128,22 @@ def test_4_all_ten_keys_exhausted_raises_sanitized_error():
     assert s.calls == [f"GEMINI_API_KEY_{i}" for i in range(1, 11)]
 
 
-def test_5_every_independent_request_starts_with_key1():
-    s = Script({"GEMINI_API_KEY_1": [quota_error(), quota_error(), "ok"]})
+def test_5_a_working_key_is_kept_and_a_dead_key_is_not_retried_on_every_request():
+    s = Script({"GEMINI_API_KEY_1": [quota_error()]})  # key 1 is exhausted from now on
     p = pool(s)
-    run(p)  # key 1 exhausted -> key 2
-    run(p)  # starts at key 1 again (exhausted) -> key 2
-    run(p)  # starts at key 1 again, which now succeeds
-    assert s.calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_1"]
+    run(p)  # key 1 fails -> key 2 works, and the pool stays on key 2
+    run(p)
+    run(p)
+    assert s.calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_2", "GEMINI_API_KEY_2"]
+
+
+def test_5b_when_the_current_key_later_fails_it_moves_on_and_wraps_around_to_earlier_keys():
+    s = Script({"GEMINI_API_KEY_1": [quota_error(), "ok"], "GEMINI_API_KEY_2": ["ok", quota_error()]})
+    p = pool(s, keys(2))
+    run(p)  # 1 fails -> 2 ok (now on 2)
+    run(p)  # 2 fails -> wraps to 1, which works again
+    run(p)  # stays on 1
+    assert s.calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_2", "GEMINI_API_KEY_1", "GEMINI_API_KEY_1"]
 
 
 def test_6_missing_keys_are_skipped_in_order():
@@ -160,18 +169,28 @@ def test_legacy_single_key_is_used_when_no_numbered_keys():
 
 @pytest.mark.parametrize("exc,category", [
     (client_error(400, "INVALID_ARGUMENT"), Category.BAD_REQUEST),
-    (client_error(400, "INVALID_ARGUMENT", reason="API_KEY_INVALID"), Category.AUTH),
-    (client_error(401, "UNAUTHENTICATED"), Category.AUTH),
-    (client_error(403, "PERMISSION_DENIED"), Category.AUTH),
     (client_error(404, "NOT_FOUND"), Category.NOT_FOUND),
 ])
-def test_7_8_client_errors_do_not_switch_keys(exc, category):
+def test_7_8_request_or_model_errors_do_not_switch_keys(exc, category):
     s = Script({"GEMINI_API_KEY_1": [exc]})
     sleeps: list[float] = []
     with pytest.raises(GeminiError) as ei:
         run(pool(s, sleeps=sleeps))
     assert ei.value.category == category
     assert s.calls == ["GEMINI_API_KEY_1"] and sleeps == []
+
+
+@pytest.mark.parametrize("exc", [
+    client_error(400, "INVALID_ARGUMENT", reason="API_KEY_INVALID"),
+    client_error(401, "UNAUTHENTICATED"),
+    client_error(403, "PERMISSION_DENIED"),
+])
+def test_9_a_rejected_key_moves_on_to_the_next_key_and_stays_there(exc):
+    s = Script({"GEMINI_API_KEY_1": [exc]})
+    p = pool(s)
+    run(p)
+    run(p)
+    assert s.calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_2"]
 
 
 # --- 10-11: transient errors and bounded retries -----------------------------------------------
@@ -199,14 +218,20 @@ def test_10c_long_retry_after_is_not_waited_inside_a_request():
     assert s.calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"] and sleeps == []
 
 
-def test_10d_server_overload_retries_same_key_and_never_switches_keys():
+def test_10d_server_overload_retries_same_key_then_moves_to_the_next_key():
     s = Script({"GEMINI_API_KEY_1": [server_error(503)]})
     sleeps: list[float] = []
-    with pytest.raises(GeminiError) as ei:
-        run(pool(s, sleeps=sleeps))
-    assert ei.value.category == Category.SERVER_UNAVAILABLE
-    assert s.calls == ["GEMINI_API_KEY_1"] * (MAX_TRANSIENT_RETRIES_PER_KEY + 1)
+    run(pool(s, sleeps=sleeps))
+    assert s.calls == ["GEMINI_API_KEY_1"] * (MAX_TRANSIENT_RETRIES_PER_KEY + 1) + ["GEMINI_API_KEY_2"]
     assert len(sleeps) == MAX_TRANSIENT_RETRIES_PER_KEY and sleeps[0] < sleeps[1]
+
+
+def test_10e_overload_on_every_key_ends_as_a_sanitized_unavailable_error():
+    s = Script({f"GEMINI_API_KEY_{i}": [server_error(503)] for i in range(1, 4)})
+    with pytest.raises(GeminiError) as ei:
+        run(pool(s, keys(3)))
+    assert ei.value.category == Category.SERVER_UNAVAILABLE and "temporarily unavailable" in str(ei.value)
+    assert len(s.calls) == 3 * (MAX_TRANSIENT_RETRIES_PER_KEY + 1)
 
 
 def test_11_no_infinite_retries_and_each_key_once_for_quota():
@@ -328,3 +353,55 @@ def test_embeddings_and_tts_use_the_pool():
     speech = GeminiSpeaker(Settings(), tp).synthesize([Turn("", "Hi")], {"Tutor": "Kore"})
     assert speech.duration_sec == pytest.approx(0.1)
     assert tts_calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"]
+
+
+class ReadTimeout(Exception):
+    """Stands in for httpx.ReadTimeout (classified by class name)."""
+
+
+def test_a_call_that_never_returns_is_abandoned_after_the_deadline_and_the_next_key_is_used():
+    import threading
+
+    never = threading.Event()
+    calls: list[str] = []
+
+    def factory(key):
+        def call(*_a, **_k):
+            calls.append(key.name)
+            if key.name == "GEMINI_API_KEY_1":
+                never.wait(30)  # hangs, like the speech endpoint on a bad key
+            return SimpleNamespace(value="ok")
+
+        return SimpleNamespace(models=SimpleNamespace(generate_content=call))
+
+    p = GeminiKeyPool(Settings(gemini_timeout_seconds=0.3), keys=keys(3), client_factory=factory, sleep=lambda s: None)
+    assert run(p).value == "ok"
+    assert run(p).value == "ok"  # stays on key 2: the hung key is not tried again
+    assert calls == ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_2"]
+    never.set()
+
+
+def test_every_key_hanging_ends_as_a_timeout_error_not_a_forever_wait():
+    import threading
+
+    never = threading.Event()
+    factory = lambda key: SimpleNamespace(models=SimpleNamespace(generate_content=lambda *a, **k: never.wait(30)))  # noqa: E731
+    p = GeminiKeyPool(Settings(gemini_timeout_seconds=0.2), keys=keys(2), client_factory=factory, sleep=lambda s: None)
+    with pytest.raises(GeminiError) as ei:
+        run(p)
+    assert ei.value.category == Category.TIMEOUT and "did not answer in time" in str(ei.value)
+    never.set()
+
+
+def test_timeouts_are_classified_separately_from_network_errors():
+    assert classify(ReadTimeout("x")).category == Category.TIMEOUT
+    assert classify(TimeoutError("Operation timed out")).category == Category.TIMEOUT
+
+
+def test_the_real_client_is_created_with_a_request_timeout(monkeypatch):
+    from google import genai
+
+    seen = {}
+    monkeypatch.setattr(genai.Client, "__init__", lambda self, **kw: seen.update(kw))
+    GeminiKeyPool(Settings(gemini_timeout_seconds=33.0), keys=keys(1))._default_factory(keys(1)[0])
+    assert seen["http_options"].timeout == 33_000

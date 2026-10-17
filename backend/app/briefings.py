@@ -60,24 +60,29 @@ def briefing_view(svc: Services, uid: str, bid: str) -> dict[str, Any]:
     data = to_jsonable(snap.to_dict() or {})
     data.pop("leaseOwner", None)
     data.pop("leaseUntil", None)
+    facets = {r.get("itemId"): r for r in data.get("ranked") or [] if isinstance(r, dict)}
     segs = []
     for s in svc.paths.segments(uid, bid).order_by("order").stream():
         seg = to_jsonable(s.to_dict() or {})
         seg["id"] = s.id
         seg["audioUrl"] = svc.blobs.read_url(seg["audioPath"]) if seg.get("audioPath") and seg.get("audioStatus") == "ok" else None
         seg["wordTimingsUrl"] = svc.blobs.read_url(seg["wordTimingsPath"]) if seg.get("wordTimingsPath") else None
-        seg["sources"] = _sources(svc, seg.get("itemIds") or [], seg.get("itemReasons") or {})
+        seg["sources"] = _sources(svc, seg.get("itemIds") or [], seg.get("itemReasons") or {}, facets)
         segs.append(seg)
     return {"id": bid, **data, "segments": segs}
 
 
-def _sources(svc: Services, ids: list[str], reasons: dict[str, str]) -> list[dict[str, Any]]:
+def _sources(svc: Services, ids: list[str], reasons: dict[str, str], ranked: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     out = []
     for iid in ids:
         it = svc.paths.item(iid).get().to_dict()
         if it:
-            out.append({"itemId": iid, "headline": it["headline"], "newsletter": it.get("senderName"),
-                        "url": it.get("url"), "linkOnly": bool(it.get("linkOnly")), "reason": reasons.get(iid)})
+            src = {"itemId": iid, "headline": it["headline"], "newsletter": it.get("senderName"),
+                   "url": it.get("url"), "linkOnly": bool(it.get("linkOnly")), "reason": reasons.get(iid)}
+            r = (ranked or {}).get(iid) or {}
+            if r.get("facetId") and r.get("explained"):  # only when the reason line names this facet
+                src["matchedFacet"] = {"id": r["facetId"], "type": r.get("facetType"), "text": r.get("facetText")}
+            out.append(src)
     return out
 
 

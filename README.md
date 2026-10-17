@@ -31,6 +31,8 @@ There is one backend. FastAPI owns every API route. The prototype's Express serv
 | `backend/app/pipeline/` | B2–B10: `ingest.py` (shared cache), `score.py` (§7.1 formula), `personal.py` (plans, scripts), `validate.py` (grounding gates), `runner.py`, `audio_stage.py` |
 | `backend/app/audio/tts.py` | Gemini TTS client (multi- and single-speaker), WAV joining, line timings |
 | `backend/app/learner/` | §7.2–7.4 mastery, 1/3/7-day review, topic weights with a 30-day half-life |
+| `backend/app/recommend/` | Semantic recommendations: interest facets, story embeddings, ranking, feedback learning (see Recommendations) |
+| `backend/recsys_eval/` | Offline evaluation: 50 labelled stories, keyword versus embedding ranking |
 | `backend/app/checkpoint.py` | Ask with citation validation, recall quiz with server-only rubrics, Apply, Simpler, Go deeper, Save, spoken answers |
 | `backend/app/gmail/` | Read-only OAuth, sender detection, fetch with the newsletter-header check, watch/renew/stop |
 | `backend/app/routes/` | HTTP routes; `internal.py` is only reachable with a Google OIDC token |
@@ -115,10 +117,82 @@ Choose **Try with a sample newsletter**. Sample mode runs the real pipeline on t
 
 `GET /api/ready` reports what is configured (Firestore, OpenAI model, Gemini, TTS model, dispatch mode).
 
+## Recommendations: semantic ranking
+
+Stories are ranked for each user from embeddings and plain Python. **No language model scores, classifies, reranks or explains a story**, and ranking makes no AI call at all (a test fails the build if `app/recommend` mentions the LLM). Code: `backend/app/recommend/`. `REC_ENABLED=false` brings back the original B6 scorer.
+
+**Where it plugs into the pipeline**
+
+| Stage | What happens |
+|---|---|
+| B5 Embed and de-duplicate (`pipeline/ingest.py`) | `ensure_story_embeddings`: one embedding per story from headline + blurb + the opening of the linked article (`REC_EXCERPT_CHARS`), task type `RETRIEVAL_DOCUMENT`, cached on `items/{id}` and shared by every user. A content signature (model, dimension, headline, blurb, article present, excerpt length) decides whether it is embedded again. Vectors that are missing, the wrong size, non-finite or all zeros are rejected. Batched, with bounded retries and exponential backoff for server/network errors and one overall time budget (`REC_EMBED_*`). |
+| B6 Rank (`pipeline/personal.py`) | `prepare_profile` builds the user's facets and embeds only those that have no valid embedding (`RETRIEVAL_QUERY`). `semantic_rank` then runs `recommend/ranking.py`. If the user has no embedded interest facet, no story has a usable vector, or anything fails, the original scorer runs unchanged (users without a profile still get the popularity ranking). |
+| B7 Plan and publish (`pipeline/runner.py`) | The ranked list, the matched facet and the ranking mode are stored on the briefing (`ranked`, `rankingMode`). The planner and the script writer receive the same `Scored` objects and reason lines as before, so the API contract is unchanged. |
+
+**Interest facets** (`users/{uid}/profile/main.facets[]`): `project`, `goal`, `stack`, `interest`, `expertise` and `mute`, each with `id`, `text`, `type`, `weight`, `embedding`, `createdAt`, `updatedAt`. They come only from what the user declared: the project text and goals and mute topics from onboarding, plus optional `stack`, `interests` and `expertise` lists accepted by `PUT /api/profile`. Nothing is inferred and no model is used. Facets are never averaged into one profile vector. An embedding is reused while the facet text, model and dimension are unchanged and is regenerated when the text changes. The existing project and goal embeddings are reused too, so most users need no extra embedding call.
+
+**Ranking** (`ranking.py`)
+1. `facet_score = max(0, cosine(story, facet)) × effective facet weight` for every positive facet; `semantic_score` is the best one. Up to two close runners-up are kept as secondary matches for display and never add to the score.
+2. Relevance is min-max normalised over the candidates, because raw cosines have no universal scale. Novelty (only where there is data: known concepts with mastery ≥ 0.7, or "Knew this already" feedback) is at most 30% of the score (default 15%); stories from clusters heard in the last 7 briefings are penalised.
+3. Duplicates (same id, canonical URL, normalised headline, or cosine ≥ `REC_DUPLICATE_THRESHOLD`) collapse to one story, preferring the copy with article text. Related but different stories are kept. With recommendations on, B5 clustering uses the same threshold (0.93) instead of the original 0.88: in `recsys_eval`, true duplicates scored 0.99, 0.96 and 0.89 while distinct but related stories reached 0.91, so 0.88 would have merged different stories. 0.93 merges none of those but misses the 0.89 duplicate, which only MMR demotes; the cosine alone cannot separate them.
+4. Maximal marginal relevance (`REC_MMR_LAMBDA`) picks `REC_FINAL_COUNT` stories. A wildcard is a story that looks different from the picks but clears a relevance floor and has no mute penalty; it is never forced.
+
+**Mutes** are separate negative signals, never mixed into relevance. A story is dropped when a muted phrase is in its headline, category or extracted entities, or when its cosine to a muted topic is at least `REC_MUTE_EXCLUDE_GAP` above the candidates' median cosine to that topic (a fixed baseline stands in for the median when there are fewer than `REC_MUTE_MIN_CANDIDATES` stories). A smaller gap, or a phrase only in the blurb (an incidental mention), is penalised instead. High relevance never overrides a mute. *Limitation:* embeddings cannot reliably separate "about X" from "mentions X at length". In the evaluation set a pgvector story that only thanks "startup funding programs" scores close to funding stories, so it is penalised but kept, and one clearly crypto story (+0.097) falls just under the exclude gap and is only penalised. The gaps were chosen from that same dataset's live similarities, so they are a starting point to recalibrate (`python -m recsys_eval.run_eval --live --mute-diagnostics`), not a validated threshold.
+
+**Explanations** are built from the matched facet's own text, with no model: "Recommended because it matches your project: …", "Matches your learning goal: …", "Related to your technology stack: …". A weakly matched story gets a neutral line, the wildcard keeps "Wildcard: outside your usual topics". The Today screen shows these lines under each segment.
+
+**Feedback** (`feedback.py`, called from `record_events`)
+
+| Action | Effect |
+|---|---|
+| Save, Ask, Go deeper | learned weight of the matched facet +0.10 / +0.05 / +0.08 |
+| Less like this | learned weight −0.15 (the existing 3-times rule that adds the topic to the mute list still applies) |
+| Knew this already (new button in the checkpoint sheet) | raises familiarity of the story's topics, which lowers its novelty; relevance is untouched |
+
+The declared weight is never rewritten: `effective weight = clamp(declared + decayed learned delta, REC_WEIGHT_MIN, REC_WEIGHT_MAX)`, with the learned part bounded at ±`REC_FEEDBACK_MAX_DELTA` and halving every `REC_FEEDBACK_HALF_LIFE_DAYS` (30). Each submission is one record in `users/{uid}/feedback/{key}` (`userId`, `storyId`, `briefingId`, `action`, `matchedFacetId`, `topic`, `createdAt`, `idempotencyKey`), written in the same transaction as the profile update; the key is one per briefing, story and action, so retries and double taps count once. `GET /api/profile/facets` shows declared, learned and effective weights; `POST /api/profile/facets/reset-learning` clears what feedback taught.
+
+**Data model changes** (no new database, index or security rule; the user subtree is already read-only for browsers, exported and deleted with the account)
+- `users/{uid}/profile/main`: `facets[]`, `facetPrefs{facetId: {delta, updatedAt}}`, `familiarity{topic: {w, updatedAt}}`, optional `stack[]`, `interests[]`, `expertise[]`.
+- `users/{uid}/feedback/{idempotencyKey}`: new collection (above).
+- `items/{id}`: `embeddingSig`, `embeddingModel`, `embeddingDim`, `embeddedAt` next to the existing `embedding`. Items embedded before this change are embedded once more so every cached vector uses the same text.
+- `users/{uid}/briefings/{id}`: `ranked[]` (`itemId`, `score`, `semanticScore`, `rawSimilarity`, `relevance`, `facetId`, `facetType`, `facetText`, `matchedFacets[]`, `noveltyScore`, `rankingVersion`, `reason`, `wildcard`, `explained`), `rankingMode` (`semantic` or `legacy`). There is no rerank or model-generated field.
+
+**Configuration:** every weight, threshold and limit above is a `REC_*` variable listed in `backend/.env.example` (model: `GEMINI_EMBED_MODEL`, dimension: `EMBED_DIM`). Facet and ranking state is per user under `users/{uid}`; the only shared data is the story embedding on the shared item.
+
+### Evaluation (`backend/recsys_eval/`)
+
+50 hand-labelled stories, two profiles (A: RAG developer on Python, Gemini, PostgreSQL and pgvector; B: AI agent learner), labels relevant / adjacent / irrelevant per profile, three duplicate pairs, muted-topic stories, an incidental mention and ambiguous terms (a crypto exchange called Gemini, RAG status reports, real-estate agents, Python snakes). Same data and labels for every method:
+
+```bash
+cd backend
+python -m recsys_eval.run_eval --write                      # offline, deterministic, no network
+python -m recsys_eval.run_eval --live --write               # real Gemini embeddings; vectors cached in embedding_cache.json
+python -m recsys_eval.run_eval --live --mute-diagnostics    # similarity gaps per muted topic
+```
+
+Live run, `gemini-embedding-001` at 768 dimensions (`RESULTS.live.md`), mean of the two profiles:
+
+| | Keyword | Embedding, facets only | Embedding, full ranking |
+|---|---|---|---|
+| precision@5 / nDCG@5 / recall@5 | 1.00 / 1.00 / 0.39 | 1.00 / 1.00 / 0.39 | 1.00 / 1.00 / 0.39 |
+| precision@10 / nDCG@10 / recall@10 | 0.75 / 0.88 / 0.58 | 0.90 / 0.96 / 0.70 | 0.85 / 0.93 / 0.67 |
+| mute violations @5 / @10 | 0 / 0 | 0 / 0 | 0 / 0 |
+| duplicates @5 / @10 | 0.20 / 0.15 | 0.00 / 0.10 | 0.10 / 0.05 |
+| mean ranking time, 50 stories | 3 ms | 41 ms | 46 ms |
+
+Embedding cost: 1 batched API call for all 50 stories (0.02 calls per story, 1 text per story) plus 1 call per profile for its facets; about 2,200 input tokens in total (characters ÷ 4, an estimate because `embed_content` returns no token count). Cost is not reported because the pricing page does not list `gemini-embedding-001`; set `REC_EMBED_PRICE_PER_MILLION_TOKENS` or `--price-per-million`.
+
+How to read these numbers:
+- Top 5 is at the ceiling for every method, so it cannot tell them apart; the differences appear at 10. Two profiles and 50 stories give very small samples (one slot is 5 points of precision@10 per profile), the labels were written by the author of the evaluation, and the mute gaps were set from this same data. Treat it as a regression harness, not as proof of a gain.
+- "Full ranking" (mutes, duplicate removal, MMR) gives up a little relevance for diversity, as intended. None of the mute-tagged stories reached the top 10 for any method, so mute handling is checked by unit and integration tests, not by this dataset.
+- The offline mode is a deterministic hashed bag-of-words stand-in with no semantic knowledge. In it the keyword baseline wins (precision@10 0.75 against 0.60 and 0.70), so those numbers describe the ranking code, not Gemini.
+- The dataset was revised once, after a first offline run showed keyword matching at 1.00 / 1.00 (precision@5 / nDCG@5) against 0.80 / 0.88 for the embedding stand-in: most positives reused the profile's own words, so several were rewritten as paraphrases. That revision was informed by a result, and the live numbers above come from the revised data only.
+
 ## Tests
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q   # unit tests; integration tests need the emulators running
+cd backend && .venv/Scripts/python -m recsys_eval.run_eval   # offline recommendation evaluation (add --live for Gemini)
 cd frontend && npm test                           # frontend unit tests (vitest)
 cd frontend && npx tsc --noEmit                   # type check
 # Browser journey (Playwright): emulators + test API + Vite
@@ -148,4 +222,6 @@ Configuration keys are documented in `backend/.env.example` and `frontend/.env.e
 - **Email notifications:** not implemented. Sending email would need a non-Google service or a Gmail send scope, which breaks the read-only rule. Push (FCM) is implemented.
 - **Gmail for real users:** needs Google OAuth verification of the restricted `gmail.readonly` scope (§13). Until then, use test users or sample mode.
 - **Line highlighting is approximate:** Gemini TTS returns no word or line timings.
-- **Never run here:** real OpenAI and Gemini calls (text, embeddings or TTS), Gmail and the deploy script. No credentials were available during development.
+- **Mostly never run against real services:** OpenAI text, Gemini TTS, Gmail and the deploy script were never run. Gemini embeddings were run once, on the synthetic `recsys_eval` dataset only (60 distinct short texts in 3 API calls); no briefing has run end to end with real providers.
+- **Recommendation thresholds come from one embedding model and a small dataset:** the mute gaps were chosen from the live similarities of the 50-story `recsys_eval` set (so mute handling is not independently validated), and the duplicate threshold was checked against its three duplicate pairs. Re-run `recsys_eval --live --mute-diagnostics` after changing `GEMINI_EMBED_MODEL` or `EMBED_DIM`.
+- **Stack, interests and expertise have no onboarding fields yet:** the API accepts them (`PUT /api/profile`) and they become facets, but the 4-step onboarding collects only the project, goals and mute topics.

@@ -1,23 +1,21 @@
-"""Shared Gemini API key pool with sequential failover.
+"""Shared Gemini API key pool with sticky sequential failover.
 
-Every independent Gemini request starts with GEMINI_API_KEY_1 and moves to the next configured key
-(1 -> 2 -> ... -> 10) only when the current key's quota is exhausted, or when it stays rate limited
-after a bounded number of retries. Nothing remembers the last key that worked: the next request
-starts at key 1 again.
+A request starts with the key that worked last (GEMINI_API_KEY_1 at process start). When that key fails it moves to the
+next one (1 -> 2 -> ... -> 10, wrapping around) and STAYS on the first key that works: later requests start there, so a
+dead key is not retried on every call. Only a request that exhausts every key raises.
 
 Errors are classified from the provider's structured fields (HTTP status, google.rpc QuotaFailure /
 RetryInfo details, Retry-After), not from free-text messages:
 
-  quota_exhausted     429 with a per-day quota, a quota limit of 0, or a long retry delay
-                      -> try the next key
-  rate_limited        429 with a short (per-minute) limit
-                      -> retry the same key after the server's retry delay (bounded), then next key
-  server_unavailable  500/502/503/504 (e.g. "model is experiencing high demand")
-                      -> retry the same key with backoff (bounded); never switch keys, since the
-                         overload is on the model and other keys would hit it too
-  network             connection errors and timeouts -> same as server_unavailable
-  bad_request, auth, not_found, other
-                      -> raised at once; never switch keys
+  quota_exhausted     429 with a per-day quota, a quota limit of 0, or a long retry delay -> next key
+  rate_limited        429 with a short (per-minute) limit -> retry the same key after the server's retry delay
+                      (bounded), then next key
+  server_unavailable  500/502/503/504 (e.g. "model is experiencing high demand") -> retry the same key with backoff
+  network             connection errors and timeouts                              (bounded), then next key
+  timeout             no answer within GEMINI_TIMEOUT_SECONDS (a hung key) -> next key at once
+  auth                invalid / denied key (401, 403, API_KEY_INVALID) -> next key at once
+  bad_request, not_found, other
+                      -> raised at once; the request or model is wrong, another key cannot help
 
 Key values never appear in logs, exceptions or API responses: log lines carry only the key's
 variable name (e.g. GEMINI_API_KEY_3), and app.logs redacts any registered key value.
@@ -30,6 +28,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -52,13 +51,14 @@ class Category(enum.StrEnum):
     RATE_LIMITED = "rate_limited"
     SERVER_UNAVAILABLE = "server_unavailable"
     NETWORK = "network"
+    TIMEOUT = "timeout"
     BAD_REQUEST = "bad_request"
     AUTH = "auth"
     NOT_FOUND = "not_found"
     OTHER = "other"
 
 
-FAILOVER = {Category.QUOTA_EXHAUSTED}
+FAILOVER = {Category.QUOTA_EXHAUSTED, Category.AUTH, Category.TIMEOUT}  # no same-key retry: a key that hangs is skipped at once
 RETRY_SAME_KEY = {Category.RATE_LIMITED, Category.SERVER_UNAVAILABLE, Category.NETWORK}
 
 
@@ -89,6 +89,34 @@ class GeminiError(RuntimeError):
         super().__init__(message)
         self.category = Category(category)
         self.attempts = attempts
+
+
+class GeminiRequestTimeout(Exception):
+    """A Gemini call produced no answer within the deadline (classified as a timeout by its name)."""
+
+
+def run_with_deadline[R](fn: Callable[[], R], seconds: float) -> R:
+    """Runs fn and gives up waiting after `seconds`. The Gemini speech endpoint ignores the SDK's own timeout settings, so a
+    key that hangs would otherwise block forever; the hung call is abandoned on a daemon thread (it cannot be killed) and the
+    caller can move on to the next key."""
+    if seconds <= 0:
+        return fn()
+    box: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # re-raised in the caller's thread
+            box["error"] = exc
+
+    t = threading.Thread(target=work, daemon=True, name="gemini-call")
+    t.start()
+    t.join(seconds)
+    if t.is_alive():
+        raise GeminiRequestTimeout(f"no answer within {seconds:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 # --- configuration ---------------------------------------------------------------------------
@@ -198,8 +226,9 @@ def classify(exc: BaseException) -> Classified:
         category = Category.NOT_FOUND
     elif code == 400 or status in ("INVALID_ARGUMENT", "FAILED_PRECONDITION"):
         category = Category.BAD_REQUEST
-    elif name in ("ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
-                  "RemoteProtocolError", "TimeoutException", "APIConnectionError", "APITimeoutError"):
+    elif "Timeout" in name or "timed out" in str(exc).lower() or code == 408:
+        category = Category.TIMEOUT
+    elif name in ("ConnectError", "RemoteProtocolError", "APIConnectionError"):
         category = Category.NETWORK
     else:
         category = Category.OTHER
@@ -228,6 +257,7 @@ class GeminiKeyPool:
         self._factory = client_factory or self._default_factory
         self._clients: dict[str, Any] = {}
         self._sleep = sleep
+        self._current = 0  # index of the key that worked last; the next request starts here
 
     @property
     def configured(self) -> bool:
@@ -243,7 +273,10 @@ class GeminiKeyPool:
         if self.vertex:
             s = self.settings
             return genai.Client(vertexai=True, project=s.gcp_project, location=s.gemini_vertex_location)
-        return genai.Client(api_key=key.value)
+        from google.genai import types
+
+        timeout_ms = int(max(1.0, float(getattr(self.settings, "gemini_timeout_seconds", 120.0))) * 1000)
+        return genai.Client(api_key=key.value, http_options=types.HttpOptions(timeout=timeout_ms))
 
     def _client(self, key: ApiKey) -> Any:
         client = self._clients.get(key.name)
@@ -254,24 +287,29 @@ class GeminiKeyPool:
         return client
 
     def call[R](self, what: str, fn: Callable[[Any], R]) -> R:
-        """Runs fn(client) starting at key 1. Returns fn's result unchanged; raises GeminiError."""
+        """Runs fn(client) starting at the last working key, moving on (and staying) when a key fails. Returns fn's result
+        unchanged; raises GeminiError."""
         if not self.keys:
             raise GeminiError("Gemini is not configured: set GEMINI_API_KEY_1 (or GEMINI_API_KEY)", Category.AUTH)
         timer = Timer()
         total = len(self.keys)
+        start = self._current % total
         attempts = 0
         seen: list[Category] = []
-        for idx, key in enumerate(self.keys, start=1):
+        for pos in range(total):
+            idx = (start + pos) % total
+            key = self.keys[idx]
             retries = 0
             while True:
                 attempts += 1
                 try:
-                    result = fn(self._client(key))
+                    result = run_with_deadline(lambda k=key: fn(self._client(k)), float(getattr(self.settings, "gemini_timeout_seconds", 0) or 0))
                 except Exception as exc:
                     c = classify(exc)
-                    log(logger, logging.WARNING, "gemini_attempt_failed", what=what, attempt=f"{idx}/{total}",
+                    log(logger, logging.WARNING, "gemini_attempt_failed", what=what, attempt=f"{pos + 1}/{total}",
                         key=key.name, category=c.category.value, code=c.code, status=c.status,
                         quotaIds=c.quota_ids[:3], retryAfter=c.retry_after, sameKeyRetry=retries,
+                        reason=REASON.get(c.category), nextAction=_next_action(c.category, retries, pos, total),
                         **exc_fields(exc))
                     if c.category in RETRY_SAME_KEY and retries < MAX_TRANSIENT_RETRIES_PER_KEY:
                         if c.category == Category.RATE_LIMITED and c.retry_after and c.retry_after > MAX_RETRY_AFTER_SECONDS:
@@ -282,31 +320,58 @@ class GeminiKeyPool:
                         retries += 1
                         self._sleep(wait)
                         continue
-                    if c.category in FAILOVER or c.category == Category.RATE_LIMITED:
+                    if c.category in FAILOVER or c.category in RETRY_SAME_KEY:
                         seen.append(c.category)
-                        break  # next key
+                        break  # retries on this key are used up: next key
                     log(logger, logging.WARNING, "gemini_request_failed", what=what, key=key.name,
                         category=c.category.value, attempts=attempts, durationMs=timer.ms())
                     raise GeminiError(_message(c.category, what), c.category, attempts) from None
-                if idx > 1:
-                    log(logger, logging.INFO, "gemini_failover_succeeded", what=what, attempt=f"{idx}/{total}",
-                        key=key.name, attempts=attempts, durationMs=timer.ms())
+                if idx != self._current:
+                    log(logger, logging.INFO, "gemini_key_switched", what=what, key=key.name,
+                        previous=self.keys[self._current % total].name, attempts=attempts, durationMs=timer.ms())
+                    self._current = idx  # stay on the key that works
                 else:
                     log(logger, logging.DEBUG, "gemini_request_ok", what=what, key=key.name, attempts=attempts,
                         durationMs=timer.ms())
                 return result
-        category = Category.QUOTA_EXHAUSTED if Category.QUOTA_EXHAUSTED in seen else Category.RATE_LIMITED
+        category = (Category.QUOTA_EXHAUSTED if Category.QUOTA_EXHAUSTED in seen
+                    else Category.RATE_LIMITED if Category.RATE_LIMITED in seen else seen[-1])
         log(logger, logging.ERROR, "gemini_all_keys_exhausted", what=what, keys=total, attempts=attempts,
-            category=category.value, durationMs=timer.ms())
-        raise GeminiError(
-            f"All {total} configured Gemini API key(s) are out of quota or rate limited.", category, attempts
-        ) from None
+            category=category.value, reason=REASON.get(category), durationMs=timer.ms(),
+            hint="run `python -m app.ai.check_keys` in backend/ to see which key is out of credits, expired or rate limited")
+        if category in (Category.QUOTA_EXHAUSTED, Category.RATE_LIMITED):
+            raise GeminiError(
+                f"All {total} configured Gemini API key(s) are out of quota or rate limited.", category, attempts
+            ) from None
+        raise GeminiError(_message(category, what), category, attempts) from None
+
+
+REASON = {
+    Category.QUOTA_EXHAUSTED: "quota or credits used up for this key (daily/monthly limit, or billing not enabled)",
+    Category.RATE_LIMITED: "rate limited (too many requests per minute)",
+    Category.AUTH: "key invalid, expired, revoked or denied",
+    Category.SERVER_UNAVAILABLE: "Gemini overloaded or unavailable (not the key's fault)",
+    Category.NETWORK: "network error reaching Gemini",
+    Category.TIMEOUT: "no response within the time limit (this key or its project is hanging)",
+    Category.NOT_FOUND: "model not found for this key",
+    Category.BAD_REQUEST: "request rejected as invalid",
+    Category.OTHER: "unknown error",
+}
+
+
+def _next_action(category: Category, retries: int, pos: int, total: int) -> str:
+    if category in RETRY_SAME_KEY and retries < MAX_TRANSIENT_RETRIES_PER_KEY:
+        return "retrying the same key"
+    if category in FAILOVER or category in RETRY_SAME_KEY:
+        return "switching to the next key" if pos + 1 < total else "no keys left"
+    return "giving up (another key cannot fix this)"
 
 
 def _message(category: Category, what: str) -> str:
     return {
         Category.SERVER_UNAVAILABLE: f"{what}: Gemini is temporarily unavailable.",
         Category.NETWORK: f"{what}: could not reach Gemini.",
+        Category.TIMEOUT: f"{what}: Gemini did not answer in time.",
         Category.BAD_REQUEST: f"{what}: Gemini rejected the request as invalid.",
         Category.AUTH: f"{what}: Gemini rejected the API key or permissions.",
         Category.NOT_FOUND: f"{what}: the Gemini model or resource was not found.",

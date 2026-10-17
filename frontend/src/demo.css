@@ -1,0 +1,64 @@
+/* Knowly demo screens (landing, issue, modals). Classes are copied from the approved mockup and scoped under .kn.
+   Colours use the app tokens from index.css, so dark mode works; the few greys the mockup uses that have no token are below. */
+.kn {
+  --kn-muted: #5f6672;
+  --kn-field-line: #c9ced6;
+  --kn-btn-line: #d5d9e0;
+  --kn-accent-line: #9aa9e6;
+  --kn-overlay: rgba(15, 17, 21, 0.5);
+  --kn-max: clamp(1240px, 92vw, 2400px); /* content width grows with the screen */
+  --kn-badge-bg: var(--partly-soft);
+  --kn-badge-fg: var(--partly);
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100dvh;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .kn { --kn-muted: #9aa1ad; --kn-field-line: #3a404b; --kn-btn-line: #3a404b; --kn-accent-line: #4a5a9a; }
+}
+:root[data-theme="dark"] .kn { --kn-muted: #9aa1ad; --kn-field-line: #3a404b; --kn-btn-line: #3a404b; --kn-accent-line: #4a5a9a; }
+
+.kn *, .kn *::before, .kn *::after { box-sizing: border-box; }
+.kn a { color: var(--accent); }
+.kn a:hover { color: var(--accent-hover); }
+.kn p, .kn h1, .kn h2, .kn h3 { margin: 0; }
+.kn ul, .kn ol { margin: 0; padding: 0; list-style: none; }
+
+.kn .btn { font: inherit; font-weight: 600; font-size: 15px; min-height: 44px; padding: 0 18px; border-radius: 10px; border: 1px solid var(--kn-btn-line); background: var(--surface); color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; white-space: nowrap; }
+.kn .btn:hover { background: var(--surface-2); color: var(--text); }
+.kn .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.kn .btn-primary:hover { background: var(--accent-hover); color: var(--on-accent); }
+.kn .btn-primary:disabled { background: var(--kn-accent-line); border-color: var(--kn-accent-line); cursor: not-allowed; }
+.kn .btn-ghost { border-color: transparent; background: transparent; }
+.kn .btn-lg { min-height: 52px; font-size: 16px; padding: 0 24px; border-radius: 12px; }
+.kn .icon-btn { width: 44px; height: 44px; padding: 0; border-radius: 999px; }
+.kn .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+.kn .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: .02em; padding: 4px 10px; border-radius: 999px; background: var(--kn-badge-bg); color: var(--kn-badge-fg); }
+.kn .badge-good { background: var(--good-soft); color: var(--good); }
+.kn .field { font: inherit; font-size: 15px; width: 100%; border: 1px solid var(--kn-field-line); border-radius: 10px; padding: 12px 14px; background: var(--surface); color: var(--text); }
+.kn .field:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.kn .choice { font: inherit; text-align: left; cursor: pointer; flex: 1 1 220px; border: 1.5px solid var(--border); background: var(--surface); border-radius: 14px; padding: 16px 18px; color: var(--text); }
+.kn .choice:hover { border-color: var(--kn-accent-line); }
+.kn .choice.on { border-color: var(--accent); background: var(--accent-soft); }
+.kn .line { display: flex; gap: 12px; padding: 10px 12px; border-radius: 10px; font-size: 15px; line-height: 1.5; color: var(--text-2); }
+.kn .line.now { background: var(--highlight); color: var(--text); }
+.kn .opt { font: inherit; font-size: 15px; text-align: left; width: 100%; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 12px; border: 1.5px solid var(--border); background: var(--surface); color: var(--text); }
+.kn .opt:hover { border-color: var(--kn-accent-line); }
+.kn .opt.picked { border-color: var(--accent); background: var(--accent-soft); }
+.kn .opt.right { border-color: var(--good); background: var(--good-soft); }
+.kn .opt.wrong { border-color: var(--notyet); background: var(--notyet-soft); }
+.kn .chip { font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid var(--kn-btn-line); background: var(--surface); border-radius: 999px; padding: 8px 12px; color: var(--text); text-align: left; }
+.kn .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+.kn .overlay { position: fixed; inset: 0; z-index: 50; background: var(--kn-overlay); display: flex; justify-content: center; padding: 16px; }
+.kn .overlay.center { align-items: center; overflow: hidden; }
+.kn .overlay.top { align-items: flex-start; overflow-y: auto; }
+.kn .dialog { max-width: 100%; box-shadow: 0 24px 64px rgba(15, 17, 21, 0.25); }
+.kn .spin { animation: kn-spin 0.9s linear infinite; }
+@keyframes kn-spin { to { transform: rotate(360deg); } }
+.kn .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* Large screens: scale the whole UI up (type, buttons, spacing) instead of leaving a small column in the middle. */
+@media (min-width: 1700px) { .kn { zoom: 1.2; --kn-max: 100%; } }
+@media (min-width: 2200px) { .kn { zoom: 1.5; --kn-max: 100%; } }

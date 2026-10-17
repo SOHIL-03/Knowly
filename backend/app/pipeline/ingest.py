@@ -26,6 +26,7 @@ from app.logs import Timer, exc_fields, get_logger, log
 from app.pipeline.dedupe import DedupeInput, cluster
 from app.pipeline.enrich import fetch_article
 from app.pipeline.text import clean_issue_html, is_newsletter, url_in_issue
+from app.recommend.story_embeddings import ensure_story_embeddings
 from app.services import Services
 from app.store import now, stable_id, unvec, vec
 
@@ -271,7 +272,13 @@ def embed_and_cluster(svc: Services, items: list[dict[str, Any]]) -> tuple[dict[
     timer = Timer()
     missing = [it for it in items if not it.get("embedding")]
     log(logger, logging.INFO, "embed_start", items=len(items), missing=len(missing), cached=len(items) - len(missing))
-    if missing:
+    if svc.settings.rec_enabled:
+        # Recommendations on: headline + blurb + article intro, validated, cached on the item by content signature.
+        stats = ensure_story_embeddings(svc, items)
+        if stats.stories and not stats.usable:
+            mode = "url_only"
+            log(logger, logging.WARNING, "embedding_failed_url_fallback", count=stats.stories, category=stats.error or "invalid_vectors")
+    elif missing:
         try:
             vectors = svc.embedder.embed([f"{it['headline']}\n{it['blurb']}" for it in missing])
             batch = svc.db.batch()
@@ -288,11 +295,14 @@ def embed_and_cluster(svc: Services, items: list[dict[str, Any]]) -> tuple[dict[
         for it in items
         if not it.get("isSponsor")
     ]
-    clusters = cluster(inputs, svc.settings.dedupe_cosine_threshold)
+    # With recommendations on, the duplicate threshold is REC_DUPLICATE_THRESHOLD: with gemini-embedding-001 distinct but
+    # related stories reached cosine 0.91 in recsys_eval, so the original 0.88 would merge different stories.
+    threshold = svc.settings.rec_duplicate_threshold if svc.settings.rec_enabled else svc.settings.dedupe_cosine_threshold
+    clusters = cluster(inputs, threshold)
     batch = svc.db.batch()
     for iid, (cid, count) in clusters.items():
         batch.update(svc.paths.item(iid), {"clusterId": cid, "coveredByCount": count})
     batch.commit()
     log(logger, logging.INFO, "cluster_done", mode=mode, inputs=len(inputs), clusters=len({c for c, _ in clusters.values()}),
-        threshold=svc.settings.dedupe_cosine_threshold, durationMs=timer.ms())
+        threshold=threshold, durationMs=timer.ms())
     return clusters, mode

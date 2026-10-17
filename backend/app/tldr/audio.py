@@ -14,6 +14,7 @@ import logging
 import time
 import wave
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from app.ai.client import AiQuotaExceeded, AiUnavailable
@@ -37,18 +38,18 @@ class Assembled:
 
 
 def synthesize_all(tts: Speaker, turns: list[Turn], voices: dict[str, str], *, chunk_chars: int, rid: str,
-                   sleep: Callable[[float], None] | None = None) -> Assembled:
+                   sleep: Callable[[float], None] | None = None, concurrency: int = 1) -> Assembled:
+    """Speaks every chunk. With concurrency > 1 several chunks are synthesized at once (each Gemini call takes a minute or
+    more, so a long episode is far faster); the results are always joined in script order."""
     chunks = chunk_turns(turns, chunk_chars)
     if sum(len(c) for c in chunks) != len(turns):
         raise AiUnavailable("Internal error: script turns were lost while splitting for audio")
-    pcms: list[bytes] = []
-    parts: list[tuple[int, float]] = []
-    sizes: list[int] = []
-    calls = 0
-    for n, chunk in enumerate(chunks, start=1):
+
+    def speak(n: int, chunk: list[Turn]) -> tuple[bytes, int]:
+        """(pcm, tts calls made) for one chunk, retried on transient failure or a cut-off clip."""
         chars = sum(len(t.text) for t in chunk)
         expected = chars / CHARS_PER_SEC
-        pcm: bytes | None = None
+        calls = 0
         for attempt in range(1, MAX_ATTEMPTS + 1):
             timer = Timer()
             calls += 1
@@ -70,13 +71,19 @@ def synthesize_all(tts: Speaker, turns: list[Turn], voices: dict[str, str], *, c
                 continue
             log(logger, logging.INFO, "tldr_tts_chunk_ok", podcastId=rid, chunk=f"{n}/{len(chunks)}", attempt=attempt,
                 chars=chars, seconds=round(secs, 1), durationMs=timer.ms())
-            pcm = got
-            break
-        if pcm is None:
-            raise AiUnavailable(f"Audio for part {n} of {len(chunks)} could not be generated")
-        pcms.append(pcm)
-        parts.append((len(chunk), pcm_seconds(pcm)))
-        sizes.append(chars)
+            return got, calls
+        raise AiUnavailable(f"Audio for part {n} of {len(chunks)} could not be generated")
+
+    workers = max(1, min(concurrency, len(chunks)))
+    if workers == 1:
+        done = [speak(n, c) for n, c in enumerate(chunks, start=1)]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            done = list(pool.map(lambda a: speak(*a), enumerate(chunks, start=1)))  # map keeps the script order
+    pcms = [pcm for pcm, _ in done]
+    calls = sum(c for _, c in done)
+    parts = [(len(chunk), pcm_seconds(pcm)) for chunk, pcm in zip(chunks, pcms, strict=True)]
+    sizes = [sum(len(t.text) for t in chunk) for chunk in chunks]
 
     pcm_all = b"".join(pcms)
     wav = wav_from_pcm(pcm_all)

@@ -36,7 +36,8 @@ def handle_deeper_segment(payload: dict[str, Any]) -> None:
 def handle_tldr_podcast(payload: dict[str, Any]) -> None:
     from app.tldr.podcast import generate
 
-    generate(get_services(), payload["category"], payload["date"], payload["storyId"])
+    generate(get_services(), payload["category"], payload["date"], payload["sectionId"], payload.get("preferences"),
+             payload.get("uid"), payload.get("variant"))
 
 
 TASK_HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {

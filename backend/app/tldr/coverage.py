@@ -1,6 +1,6 @@
-"""Coverage-based script generation for a TLDR story podcast.
+"""Coverage-based script generation for a TLDR podcast (one section = several articles, or a single article).
 
-article -> coverage manifest (every point and required fact, with stable ids k1, k2, ...)
+articles -> coverage manifest (every point and required fact, with stable ids k1, k2, ...)
         -> outline (points grouped into parts; one part when the content is small)
         -> script (one LLM call per part, each with its own output-token budget)
         -> validation (deterministic ids and figures + an LLM semantic audit)
@@ -98,14 +98,20 @@ def split_paragraphs(text: str, max_chars: int) -> list[str]:
     return chunks or [text]
 
 
-def build_manifest(llm, title: str, text: str, stats: Stats, rid: str) -> list[dict[str, Any]]:
+def build_manifest(llm, title: str, text: str, stats: Stats, rid: str, *, offset: int = 0,
+                   source: str | None = None) -> list[dict[str, Any]]:
+    """Points of one article. For a section, call it once per article with the number of points so far as
+    `offset` (ids stay unique) and the article's id as `source` (each point remembers where it came from)."""
     points: list[dict[str, Any]] = []
     for n, chunk in enumerate(split_paragraphs(text, MANIFEST_CHUNK_CHARS), start=1):
         m = llm.generate_json("pro", prompts.MANIFEST_SYSTEM, prompts.manifest_prompt(title, chunk), CoverageManifest,
-                              temperature=0.1, max_output_tokens=6000, on_result=stats.hook(rid, f"manifest{n}"))
+                              temperature=0.1, max_output_tokens=6000,
+                              on_result=stats.hook(rid, f"manifest{n}" if source is None else f"manifest-{source}-{n}"))
         points += [p.model_dump() for p in m.points]
-    for i, p in enumerate(points, start=1):
+    for i, p in enumerate(points, start=offset + 1):
         p["id"] = f"k{i}"
+        if source is not None:
+            p["source"] = source
     return points
 
 
@@ -119,11 +125,14 @@ def plan_outline(points: list[dict[str, Any]]) -> list[list[str]]:
     parts: list[list[str]] = []
     cur: list[str] = []
     words = 0
+    cur_source: str | None = None
     for p in points:
         w = est_words(p)
-        if cur and (len(cur) >= MAX_PART_POINTS or words + w > MAX_PART_WORDS):
+        # A part never spans two articles (section podcasts): each part is written from its own article's text.
+        if cur and (len(cur) >= MAX_PART_POINTS or words + w > MAX_PART_WORDS or p.get("source") != cur_source):
             parts.append(cur)
             cur, words = [], 0
+        cur_source = p.get("source")
         cur.append(p["id"])
         words += w
     if cur:
@@ -147,11 +156,14 @@ def write_part(ctx: "Ctx", ids: list[str], first: bool, last: bool, done: list[P
     still generated from the full source) and the halves are returned in order. Never splits a point."""
     pts = [ctx.by_id[i] for i in ids]
     prompt = prompts.segment_prompt(
-        title=ctx.title, text=ctx.text, hosts=ctx.hosts, outline=ctx.outline_titles, first=first, last=last,
+        title=ctx.title, text=ctx.text_for(ids), hosts=ctx.hosts, outline=ctx.outline_titles, first=first, last=last,
+        stories=ctx.source_titles,
         points=_manifest_view(pts), covered_topics=[ctx.by_id[i]["topic"] for p in done for i in p.ids],
-        previous_lines=_tail(done), est_words=sum(est_words(p) for p in pts), fix=fix)
+        previous_lines=_tail(done), est_words=sum(est_words(p) for p in pts), fix=fix, preferences=ctx.preferences, learning=ctx.learning)
+    system = (prompts.INTERVIEW_SYSTEM + (prompts.PERSONALIZED_SYSTEM if ctx.preferences else "")
+              + (prompts.LEARNING_SYSTEM if ctx.learning else ""))
     try:
-        out = ctx.llm.generate_json("pro", prompts.INTERVIEW_SYSTEM, prompt, ScriptPart, temperature=0.5,
+        out = ctx.llm.generate_json("pro", system, prompt, ScriptPart, temperature=0.5,
                                     max_output_tokens=_budget(pts), on_result=ctx.stats.hook(ctx.rid, f"part{len(done) + 1}"))
     except AiOutputTruncated:
         ctx.stats.truncations += 1
@@ -175,9 +187,22 @@ class Ctx:
     rid: str
     by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     outline_titles: list[str] = field(default_factory=list)
+    # Section podcasts: article id -> that article's text block, and article id -> title. Empty for one article.
+    sources: dict[str, str] = field(default_factory=dict)
+    source_titles: dict[str, str] = field(default_factory=dict)
+    learning: dict | None = None  # verified, topic-relevant learning context of a signed-in listener (app/learning/profile.py)
+    preferences: str | None = None  # the listener's focus for a personalized episode; None = the default episode
 
     def __post_init__(self) -> None:
         self.by_id = {p["id"]: p for p in self.points}
+
+    def text_for(self, ids: list[str]) -> str:
+        """The source text a part is written from: the whole text for one article, otherwise only the articles
+        whose points the part covers (keeps prompts small and stops facts from mixing between stories)."""
+        if not self.sources:
+            return self.text
+        wanted = list(dict.fromkeys(self.by_id[i].get("source") for i in ids))
+        return "\n\n".join(self.sources[s] for s in wanted if s in self.sources) or self.text
 
 
 def generate_parts(ctx: Ctx, outline: list[list[str]]) -> list[Part]:
@@ -259,7 +284,7 @@ def validate(ctx: Ctx, parts: list[Part]) -> Validation:
 
 
 def _manifest_view(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{k: p[k] for k in ("id", "topic", "priority", "key_points", "required_facts", "caveat") if k in p} for p in points]
+    return [{k: p[k] for k in ("id", "source", "topic", "priority", "key_points", "required_facts", "caveat") if k in p} for p in points]
 
 
 def _part_index_of_line(parts: list[Part], line_idx: int) -> int:

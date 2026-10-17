@@ -14,7 +14,7 @@ from app.services import Services
 from app.store import now, to_jsonable
 
 logger = get_logger(__name__)
-USER_SUBCOLLECTIONS = ["profile", "newsletters", "concepts", "briefings", "events", "library", "qa", "quizzes", "usage"]
+USER_SUBCOLLECTIONS = ["profile", "newsletters", "concepts", "briefings", "events", "feedback", "library", "qa", "quizzes", "usage"]
 
 
 def _dump(doc_ref) -> dict[str, Any]:

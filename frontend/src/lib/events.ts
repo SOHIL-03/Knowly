@@ -1,7 +1,7 @@
 import { post } from './api';
 
 export type EventType =
-  | 'play' | 'pause' | 'skip' | 'replay' | 'openSource' | 'lessLikeThis' | 'cardRemoved' | 'speedChange' | 'complete';
+  | 'play' | 'pause' | 'skip' | 'replay' | 'openSource' | 'lessLikeThis' | 'knewThis' | 'cardRemoved' | 'speedChange' | 'complete';
 
 export interface PlayerEvent {
   type: EventType;
@@ -19,7 +19,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function track(ev: PlayerEvent) {
   queue.push(ev);
   if (!timer) timer = setInterval(() => void flush(), 10_000);
-  if (ev.type === 'pause' || ev.type === 'lessLikeThis') void flush();
+  if (ev.type === 'pause' || ev.type === 'lessLikeThis' || ev.type === 'knewThis') void flush();
 }
 
 export async function flush() {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AskBox } from '../AskBox';
 import { Button } from '../ui';
 
-export type CheckpointAction = 'deeper' | 'quiz' | 'save' | 'skip' | 'simpler' | 'apply' | 'lessLikeThis' | 'openSource';
+export type CheckpointAction = 'deeper' | 'quiz' | 'save' | 'skip' | 'simpler' | 'apply' | 'lessLikeThis' | 'knewThis' | 'openSource';
 
 const COUNTDOWN_SECONDS = 8;
 
@@ -97,6 +97,9 @@ export function CheckpointSheet({
           )}
           <button className="min-h-9 text-ink-2 underline-offset-2 hover:underline" onClick={() => act('lessLikeThis')}>
             Less like this
+          </button>
+          <button className="min-h-9 text-ink-2 underline-offset-2 hover:underline" onClick={() => act('knewThis')}>
+            Knew this already
           </button>
           <button className="min-h-9 text-ink-2 underline-offset-2 hover:underline" onClick={() => act('openSource')}>
             Open source

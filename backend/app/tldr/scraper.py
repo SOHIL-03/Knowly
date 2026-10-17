@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://tldr.tech"
 CATEGORY_RE = re.compile(r"^[a-z0-9-]{1,30}$")
+SECTION_RE = re.compile(r"^[a-z0-9-]{1,50}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 READ_TIME_RE = re.compile(r"\s*\((\d+)\s+minute read\)\s*$", re.I)
 SPONSOR_RE = re.compile(r"\s*\((?:sponsor|sponsored)\)\s*$", re.I)
@@ -48,6 +49,16 @@ class Section:
     name: str
     emoji: str
     stories: list[Story] = field(default_factory=list)
+    id: str = ""  # stable slug of the name, unique within the issue ("big-tech-startups")
+
+    @property
+    def key(self) -> str:
+        return self.id or slugify(self.name)
+
+
+def slugify(name: str) -> str:
+    """"Programming, Design & Data Science" -> "programming-design-data-science"; the browser uses the same rule."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:50].strip("-") or "section"
 
 
 @dataclass
@@ -119,6 +130,9 @@ def parse_issue(html: str, category: str, date: str, url: str) -> Issue:
                 sponsored=sponsored,
             ))
         if section.stories:
+            base = slugify(section.name)
+            used = {x.id for x in issue.sections}
+            section.id = base if base not in used else next(f"{base}-{n}" for n in range(2, 99) if f"{base}-{n}" not in used)
             issue.sections.append(section)
     if not issue.sections:
         raise TldrError(f"No stories found on {url}; the page layout may have changed")

@@ -15,11 +15,15 @@ from pydantic import BaseModel
 from app.ai import prompts
 from app.ai.client import INJECTION_GUARD, AiOutputInvalid
 from app.ai.schemas import (
+    AnswerEvaluations,
     ApplyResult,
     AskClassification,
+    AssessmentSet,
     ConceptCandidates,
     ExtractionResult,
     FaithfulnessResult,
+    PodcastAnswer,
+    PodcastConcepts,
     PodcastScript,
     QuizGrade,
     QuizQuestion,
@@ -43,6 +47,8 @@ class FakeEmbedder:
     def __init__(self) -> None:
         self.calls = 0
         self.fail = False
+        self.requests: list[tuple[str, int]] = []  # (task, number of texts) per call that reached the provider
+        self.corrupt: str | None = None  # "wrong_dim" | "zero" | "nan": return malformed vectors
 
     def embed(self, texts: list[str], *, task: str = "document") -> list[list[float]]:
         from app.ai.client import AiUnavailable
@@ -50,6 +56,10 @@ class FakeEmbedder:
         if self.fail:
             raise AiUnavailable("fake embedder failure")
         self.calls += 1
+        self.requests.append((task, len(texts)))
+        if self.corrupt:
+            bad = {"wrong_dim": [1.0] * (DIM + 1), "zero": [0.0] * DIM, "nan": [float("nan")] * DIM}[self.corrupt]
+            return [list(bad) for _ in texts]
         out = []
         for t in texts:
             v = [0.0] * DIM
@@ -78,9 +88,14 @@ class FakeLLM:
         self.unavailable = False
         self.quota = False  # simulate a used-up provider quota
         self.script_unsupported = False  # scripts include a claim the faithfulness check rejects
+        self.open_question_extra = False  # the assessment generator also returns a non-multiple-choice question
+        self.concept_plan: list[dict] | None = None  # concepts the extractor returns (default: two on lines 0 and 1)
+        self.evaluation_overrides: dict[str, dict] = {}  # question id -> fields of AnswerEvaluation to force
+        self.prompts: list[tuple[str, str, str]] = []  # (schema name, system, prompt) of the podcast-learning calls
 
     # --- structured ---------------------------------------------------------------------------
-    def generate_json(self, tier: str, system: str, prompt: str, schema: type[BaseModel], *, temperature: float = 0.2):
+    def generate_json(self, tier: str, system: str, prompt: str, schema: type[BaseModel], *, temperature: float = 0.2,
+                      max_output_tokens: int | None = None, on_result=None):
         from app.ai.client import AiUnavailable
 
         if self.quota:
@@ -221,6 +236,49 @@ class FakeLLM:
     def _ConceptCandidates(self, system: str, prompt: str) -> ConceptCandidates:
         return ConceptCandidates(concepts=["vector search", "cold starts", "dead letter topics"])
 
+    # --- podcast learning --------------------------------------------------------------------------------
+    def _PodcastConcepts(self, system: str, prompt: str) -> PodcastConcepts:
+        self.prompts.append(("PodcastConcepts", system, prompt))
+        plan = self.concept_plan or [
+            {"name": "vector search", "description": "Finding nearest vectors", "importance": "major", "lines": [0]},
+            {"name": "embeddings", "description": "Numeric text representations", "importance": "major", "lines": [0, 1]}]
+        return PodcastConcepts.model_validate({"concepts": plan})
+
+    def _PodcastAnswer(self, system: str, prompt: str) -> PodcastAnswer:
+        self.prompts.append(("PodcastAnswer", system, prompt))
+        q = _between(prompt, "question").strip()
+        return PodcastAnswer(answer=f"Here is an answer about: {q}", grounded="unknowable" not in q.lower())
+
+    def _AssessmentSet(self, system: str, prompt: str) -> AssessmentSet:
+        self.prompts.append(("AssessmentSet", system, prompt))
+        n = int(re.search(r"Write (\d+) questions", prompt).group(1))
+        names = re.findall(r"^- (.+?) \((?:major|supporting|mention)\)", prompt, re.M)
+        qs = []
+        for i in range(n):
+            name = names[i % len(names)]
+            qs.append({"type": "mcq", "prompt": f"Which statement about {name} is correct?", "options": ["Wrong idea", f"Right idea about {name}", "Other", "None"],
+                       "correct_index": 1, "concept_names": [name]})
+            if self.open_question_extra and i == 0:  # a free-text question the server must drop
+                qs.append({"type": "explain", "prompt": f"Explain {name} in your own words.", "concept_names": [name],
+                           "rubric": [f"{name} nearest"], "model_answer": "x"})
+        return AssessmentSet.model_validate({"questions": qs})
+
+    def _AnswerEvaluations(self, system: str, prompt: str) -> AnswerEvaluations:
+        self.prompts.append(("AnswerEvaluations", system, prompt))
+        asked = json.loads(prompt.split("QUESTIONS:\n")[1].split("\n\nLEARNER ANSWERS:")[0])
+        answers = dict(re.findall(r'<answer id="(q\d+)">\n(.*?)\n</answer>', prompt, re.S))
+        out = []
+        for q in asked:
+            text = answers.get(q["question_id"], "")
+            hits = [r for r in q["rubric"] if all(w in text.lower() for w in r.lower().split())]
+            score = len(hits) / max(1, len(q["rubric"]))
+            ev = {"question_id": q["question_id"], "correctness_score": score,
+                  "confidence": 0.9 if len(text.split()) >= 6 and "not sure" not in text.lower() else 0.3,
+                  "feedback": "Feedback", "evidence": text.split(".")[0] if hits else "",
+                  "misconception": None if score >= 0.5 else "Mixes up the idea"}
+            out.append({**ev, **self.evaluation_overrides.get(q["question_id"], {})})
+        return AnswerEvaluations.model_validate({"evaluations": out})
+
     # --- streaming ------------------------------------------------------------------------------
     def stream_text(self, tier: str, system: str, prompt: str, *, temperature: float = 0.3) -> Iterator[str]:
         self.calls.append((tier, "stream"))
@@ -342,6 +400,23 @@ class FakeTTS:
         frames = int(24_000 * self.SECONDS_PER_CHAR * sum(len(t.text) for t in turns))
         pcm = bytes(2 * max(frames, 2400))
         return Speech(wav_from_pcm(pcm), pcm_seconds(pcm), [(len(turns), pcm_seconds(pcm))])
+
+
+class FakeSTT:
+    """Gemini STT stand-in: returns the prepared text, or raises when told to. Records every call."""
+
+    def __init__(self, text: str = "What is a vector database") -> None:
+        self.text = text
+        self.calls: list[tuple[int, str]] = []
+        self.fail = False
+
+    def transcribe(self, audio: bytes, mime_type: str) -> str:
+        from app.ai.client import AiUnavailable
+
+        self.calls.append((len(audio), mime_type))
+        if self.fail:
+            raise AiUnavailable("fake STT outage")
+        return self.text
 
 
 class FakeSecrets:

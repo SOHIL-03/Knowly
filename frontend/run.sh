@@ -42,9 +42,16 @@ fi
 # --- emulators + web app -----------------------------------------------------------------
 echo "Web app: http://localhost:$PORT on this machine; listening on $HOST:$PORT (from other devices use http://<this-PC-IP>:$PORT)"
 
-if curl -s -m 2 "http://127.0.0.1:8080" >/dev/null 2>&1; then
+# All three emulators must answer. A leftover Firestore process alone (for example after Ctrl+C) would otherwise
+# look like "running" and the web app would fail with auth/network-request-failed.
+if curl -s -m 2 "http://127.0.0.1:8080" >/dev/null 2>&1 && curl -s -m 2 "http://127.0.0.1:9099" >/dev/null 2>&1; then
   echo "Firebase emulators are already running; starting only the web app."
   exec npx vite --port "$PORT" --strictPort --host "$HOST"
+fi
+if curl -s -m 2 "http://127.0.0.1:8080" >/dev/null 2>&1; then
+  echo "A Firestore emulator is running without Auth (a leftover process). Stop it, then run this script again:" >&2
+  echo "  taskkill //F //IM java.exe    (Windows Git Bash)    or    pkill -f cloud-firestore-emulator" >&2
+  exit 1
 fi
 
 IMPORT=()

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from google.cloud import firestore
 
     from app.ai.client import LLM, Embedder
+    from app.audio.stt import Transcriber
     from app.audio.tts import Speaker
     from app.dispatch import Dispatcher
     from app.infra.blobs import BlobStore
@@ -29,6 +30,7 @@ class Services:
     secrets: "SecretStore"
     http: Any = None  # optional httpx.Client override for article fetching
     notifier: Any = None
+    stt: "Transcriber | None" = None  # Gemini speech-to-text (voice questions on the podcast page)
 
     @property
     def paths(self):
@@ -44,6 +46,7 @@ def build_services(settings: Settings | None = None) -> Services:
     from app.ai.client import GeminiEmbedder
     from app.ai.gemini_keys import GeminiKeyPool
     from app.ai.openai_llm import OpenAILLM
+    from app.audio.stt import build_transcriber
     from app.audio.tts import build_speaker
     from app.dispatch import build_dispatcher
     from app.infra.blobs import GcsBlobStore
@@ -64,6 +67,7 @@ def build_services(settings: Settings | None = None) -> Services:
         dispatcher=build_dispatcher(s),
         secrets=default_secret_store(s),
         notifier=FcmNotifier(),
+        stt=build_transcriber(s, pool),
     )
 
 

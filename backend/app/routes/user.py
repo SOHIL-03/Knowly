@@ -69,11 +69,15 @@ class ProfileIn(BaseModel):
     project: ProjectIn
     goals: list[str] = Field(default_factory=list, max_length=5)
     muteTopics: list[str] = Field(default_factory=list, max_length=30)
+    # Optional declared interests for recommendations. Omitted = keep what is stored; [] = clear.
+    stack: list[str] | None = Field(default=None, max_length=10)
+    interests: list[str] | None = Field(default=None, max_length=10)
+    expertise: list[str] | None = Field(default=None, max_length=10)
 
-    @field_validator("goals", "muteTopics")
+    @field_validator("goals", "muteTopics", "stack", "interests", "expertise")
     @classmethod
     def _short(cls, v: list[str]) -> list[str]:
-        return [x[:80] for x in v]
+        return [x[:80] for x in v] if v is not None else v
 
 
 @router.put("/profile")
@@ -82,8 +86,33 @@ def put_profile(body: ProfileIn, user: CurrentUser = Depends(current_user), svc:
 
     if body.project.readmeUrl and not body.project.readmeUrl.startswith("https://"):
         raise bad_request("README link must start with https://")
-    res = save_profile(svc, user.uid, body.project.text, body.project.readmeUrl, body.goals, body.muteTopics)
+    res = save_profile(svc, user.uid, body.project.text, body.project.readmeUrl, body.goals, body.muteTopics,
+                       body.stack, body.interests, body.expertise)
     return {"ok": True, **res}
+
+
+@router.get("/profile/facets")
+def get_facets(user: CurrentUser = Depends(current_user), svc: Services = Depends(services)):
+    """The interest facets used for recommendations: declared weight, what feedback has added, and the
+    weight in effect now. Embeddings are never returned."""
+    from app.recommend.facets import load_state
+    from app.recommend.feedback import effective_weight, learned_delta
+    from app.recommend.settings import RecConfig
+
+    cfg, at, state = RecConfig.from_settings(svc.settings), now(), load_state(svc, user.uid)
+    return {"enabled": svc.settings.rec_enabled, "facets": [
+        {"id": f.id, "type": f.type, "text": f.text, "declaredWeight": f.weight, "embedded": f.embedding is not None,
+         **({"learnedDelta": round(learned_delta(state.prefs, f.id, at, cfg), 4),
+             "effectiveWeight": round(effective_weight(f, state.prefs, at, cfg), 4)} if f.positive else {})}
+        for f in state.facets]}
+
+
+@router.post("/profile/facets/reset-learning")
+def reset_facet_learning(user: CurrentUser = Depends(current_user), svc: Services = Depends(services)):
+    """Clears everything feedback taught the recommender (learned facet weights and familiarity). Declared
+    interests, mutes and their weights are untouched."""
+    svc.paths.profile(user.uid).set({"facetPrefs": {}, "familiarity": {}}, merge=True)
+    return {"ok": True}
 
 
 @router.get("/profile/levelcheck/suggestions")

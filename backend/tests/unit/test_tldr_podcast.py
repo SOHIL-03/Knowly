@@ -1,4 +1,4 @@
-"""TLDR story podcast: coverage-based script generation, validation and repair, chunked TTS and
+"""TLDR section podcast: coverage-based script generation, validation and repair, chunked TTS and
 assembly. The LLM and TTS are scripted stubs: deterministic, no network, no paid calls."""
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.ai.client import AiOutputTruncated, AiUnavailable
-from app.ai.schemas import CoverageManifest, CoverageReport, ScriptPart
+from app.ai.schemas import CoverageManifest, CoverageReport, PodcastConcepts, ScriptPart
 from app.audio.tts import SAMPLE_RATE, Speech, Turn, wav_from_pcm
 from app.pipeline.enrich import EnrichResult
 from app.tldr import audio, coverage, podcast
@@ -35,7 +35,13 @@ class ScriptedLLM:
     drop_figures: ids whose answer leaves out the numbers on the first attempt; max_points: parts with
     more points hit the output limit; unsupported_line: line the first audit calls unsupported."""
 
-    def __init__(self, points, *, omit=(), omit_always=(), drop_figures=(), max_points=None, unsupported_line=None):
+    def __init__(self, points=None, *, manifests=None, omit=(), omit_always=(), drop_figures=(), max_points=None,
+                 unsupported_line=None):
+        # manifests: article title -> its points (a section with several articles); points is then their concatenation
+        self.manifests = manifests
+        self.manifest_titles: list[str] = []
+        if manifests:
+            points = [p for pts in manifests.values() for p in pts]
         self.points, self.omit, self.omit_always = points, set(omit), set(omit_always)
         self.drop_figures, self.max_points, self.unsupported_line = set(drop_figures), max_points, unsupported_line
         self.prompts: list[tuple[str, str]] = []  # (schema, prompt)
@@ -53,11 +59,21 @@ class ScriptedLLM:
 
     def _respond(self, schema, prompt):
         if schema is CoverageManifest:
+            if self.manifests:
+                title = re.search(r"Article: (.*)", prompt).group(1)
+                self.manifest_titles.append(title)
+                return CoverageManifest.model_validate({"points": self.manifests[title]})
             return CoverageManifest.model_validate({"points": self.points})
         if schema is ScriptPart:
             return self._part(prompt)
+        if schema is PodcastConcepts:
+            return self._concepts()
         assert schema is CoverageReport
         return self._audit(prompt)
+
+    def _concepts(self):
+        return PodcastConcepts.model_validate({"concepts": [
+            {"name": p["topic"], "description": p["key_points"], "importance": "major", "lines": [1]} for p in (self.points or [])[:4]]})
 
     def _part(self, prompt):
         section = prompt.split("Points to cover in THIS part")[1].split("Already covered")[0].split("These points normally")[0]
@@ -312,14 +328,26 @@ def test_chunks_are_concatenated_in_order_with_matching_duration():
 ISSUE = Issue("tech", "2026-10-16", "https://tldr.tech/tech/2026-10-16", "Roadster", [
     Section("Big Tech", "", [Story("s1", "Roadster flies", "https://a.example/roadster", "It flew.", 4),
                              Story("s2", "Ad", "https://ad.example", "Buy.", None, True)]),
-    Section("Quick", "", [Story("s3", "Fast", "https://paywalled.example/x", "Short note about a fast thing.", 1)])])
+    Section("Quick", "", [Story("s3", "Fast", "https://paywalled.example/x", "Short note about a fast thing.", 1)]),
+    Section("Sponsors only", "", [Story("s9", "Ad two", "https://ad.example/2", "Buy more.", None, True)])])
+
+# A section with three stories: one article opens, one is paywalled (falls back to TLDR's summary), one opens.
+SCIENCE = Issue("tech", "2026-10-16", "https://tldr.tech/tech/2026-10-16", "Mixed day", [
+    Section("Science & Futuristic Technology", "", [
+        Story("s1", "Quantum magic", "https://a.example/quantum", "Magic states cut errors.", 3),
+        Story("s2", "Robot data", "https://paywalled.example/robots", "Robots need lots of examples.", 22),
+        Story("s3", "Sponsored thing", "https://ad.example", "Buy it.", None, True),
+        Story("s4", "Hardware by AI", "https://a.example/hardware", "Claude helps debug USB captures.", 10)]),
+    Section("Programming, Design & Data Science", "", [Story("s5", "Other", "https://a.example/other", "Other.", 1)])])
+
+SCIENCE_POINTS = {"Quantum magic": make_points(3), "Robot data": make_points(2), "Hardware by AI": make_points(2)}
 
 
 @pytest.fixture
 def svc(monkeypatch):
     monkeypatch.setattr(podcast.scraper, "get_issue", lambda date, category="tech": ISSUE)
     monkeypatch.setattr(podcast, "fetch_article", lambda url, **kw: EnrichResult(None, True, "paywall", []) if "paywalled" in url
-                        else EnrichResult(ARTICLE, False, "ok", []))
+                        else EnrichResult(f"{ARTICLE} [text of {url}]", False, "ok", []))
     monkeypatch.setattr(audio.time, "sleep", lambda s: None)
     s = SimpleNamespace(tts_host_a_name="Maya", tts_host_a_voice="Kore", tts_host_b_name="Theo", tts_host_b_voice="Puck",
                         enrich_timeout_seconds=5, enrich_max_chars=50000, tldr_max_repairs=2, tts_chunk_chars=2500,
@@ -327,54 +355,147 @@ def svc(monkeypatch):
     return SimpleNamespace(settings=s, blobs=Blobs(), llm=ScriptedLLM(make_points(6)), tts=TTS(), dispatcher=Dispatcher(), http=None)
 
 
+@pytest.fixture
+def science(svc, monkeypatch):
+    monkeypatch.setattr(podcast.scraper, "get_issue", lambda date, category="tech": SCIENCE)
+    svc.llm = ScriptedLLM(manifests={k: [dict(p) for p in v] for k, v in SCIENCE_POINTS.items()})
+    return svc
+
+
+SID = "big-tech"
+
+
 def test_request_generate_and_serve_the_whole_episode(svc):
-    assert podcast.request(svc, "tech", "2026-10-16", "s1") == {"status": "processing"}
-    assert svc.dispatcher.tasks == [("tldr-podcast", {"category": "tech", "date": "2026-10-16", "storyId": "s1"})]
-    assert podcast.request(svc, "tech", "2026-10-16", "s1")["status"] == "processing"
+    first = podcast.request(svc, "tech", "2026-10-16", SID)
+    assert first == {"status": "processing", "podcastId": f"tech.2026-10-16.{SID}"}
+    assert svc.dispatcher.tasks == [("tldr-podcast", {"category": "tech", "date": "2026-10-16", "sectionId": SID})]
+    assert podcast.request(svc, "tech", "2026-10-16", SID)["status"] == "processing"
     assert len(svc.dispatcher.tasks) == 1
 
     seen = {}
-    svc.tts.on_call = lambda: seen.update(podcast.view(svc, "tech", "2026-10-16", "s1"))
-    assert podcast.generate(svc, "tech", "2026-10-16", "s1") == "ok"
+    svc.tts.on_call = lambda: seen.update(podcast.view(svc, "tech", "2026-10-16", SID))
+    assert podcast.generate(svc, "tech", "2026-10-16", SID) == "ok"
 
     # the script and its completeness report are inspectable BEFORE any audio is made
     assert seen["status"] == "processing" and seen["phase"] == "audio" and seen["report"]["status"] == "complete"
     assert seen["lines"] and "audioUrl" not in seen
 
-    v = podcast.view(svc, "tech", "2026-10-16", "s1")
+    v = podcast.view(svc, "tech", "2026-10-16", SID)
     r = v["report"]
-    assert v["status"] == "ready" and v["audioUrl"].endswith("s1.wav") and r["status"] == "complete"
-    assert r["expectedPoints"] == r["coveredPoints"] == 6 and r["llmCalls"] >= 3 and r["ttsCalls"] >= 1
+    assert v["status"] == "ready" and v["audioUrl"].endswith(f"{SID}.wav") and r["status"] == "complete"
+    assert v["sectionName"] == "Big Tech" and [x["id"] for x in v["sources"]] == ["s1"]  # the sponsor is not a source
+    assert r["expectedPoints"] == r["coveredPoints"] == 6 and r["llmCalls"] >= 3 and r["ttsCalls"] >= 1 and r["stories"] == 1
     # what was spoken is exactly the validated script, and the stored audio is the full assembled episode
     assert "".join(t.text for call in svc.tts.calls for t in call) == "".join(ln["text"] for ln in v["lines"])
-    with wave.open(io.BytesIO(svc.blobs.data["podcasts/tldr/tech/2026-10-16/s1.wav"]), "rb") as w:
+    with wave.open(io.BytesIO(svc.blobs.data[f"podcasts/tldr/tech/2026-10-16/{SID}.wav"]), "rb") as w:
         stored = w.getnframes() / w.getframerate()
     assert stored == pytest.approx(r["audioSeconds"], abs=0.1) and v["durationSec"] == round(stored)
     assert v["lines"][0]["role"] == "question" and {ln["role"] for ln in v["lines"]} == {"question", "answer"}
-    assert podcast.generate(svc, "tech", "2026-10-16", "s1") == "skipped"
+    assert podcast.generate(svc, "tech", "2026-10-16", SID) == "skipped"
 
 
-def test_paywalled_article_uses_the_summary_and_says_so(svc):
-    podcast.request(svc, "tech", "2026-10-16", "s3")
-    podcast.generate(svc, "tech", "2026-10-16", "s3")
-    assert podcast.view(svc, "tech", "2026-10-16", "s3")["basis"] == "summary"
+def test_a_paywalled_story_uses_the_summary_and_says_so(svc):
+    podcast.request(svc, "tech", "2026-10-16", "quick")
+    podcast.generate(svc, "tech", "2026-10-16", "quick")
+    v = podcast.view(svc, "tech", "2026-10-16", "quick")
+    assert v["basis"] == "summary" and v["sources"][0]["basis"] == "summary"
     assert "Short note about a fast thing." in svc.llm.prompts[0][1]
+
+
+def test_a_section_podcast_covers_every_story_of_the_section_in_order(science):
+    sid = "science-futuristic-technology"
+    podcast.request(science, "tech", "2026-10-16", sid)
+    assert podcast.generate(science, "tech", "2026-10-16", sid) == "ok"
+    v = podcast.view(science, "tech", "2026-10-16", sid)
+    r = v["report"]
+    assert v["status"] == "ready" and v["sectionName"] == "Science & Futuristic Technology" and v["title"]
+    # one article per non-sponsored story, in page order, each with its own basis; the sponsor is skipped
+    assert [(x["id"], x["basis"]) for x in v["sources"]] == [("s1", "article"), ("s2", "summary"), ("s4", "article")]
+    assert v["basis"] == "mixed" and r["stories"] == 3 and r["omittedStories"] == 0
+    assert science.llm.manifest_titles == ["Quantum magic", "Robot data", "Hardware by AI"]  # one manifest per story
+    assert r["expectedPoints"] == r["coveredPoints"] == 7 and r["status"] == "complete"  # 3 + 2 + 2 points, all spoken
+    spoken = " ".join(ln["text"] for ln in v["lines"])
+    assert all(p["key_points"] in spoken for pts in SCIENCE_POINTS.values() for p in pts)
+    assert "Sponsored thing" not in spoken and "Buy it." not in " ".join(p for _, p in science.llm.prompts)
+
+
+def test_each_part_is_written_from_its_own_story_and_points_carry_their_source(science):
+    sid = "science-futuristic-technology"
+    podcast.request(science, "tech", "2026-10-16", sid)
+    podcast.generate(science, "tech", "2026-10-16", sid)
+    parts = [p for schema, p in science.llm.prompts if schema == "ScriptPart"]
+    assert len(parts) == 3  # a part never spans two stories
+    marks = ["=== Article [s1]", "=== Article [s2]", "=== Article [s4]"]
+    for part, mark in zip(parts, marks, strict=True):
+        body = part.split("<article>")[1]
+        assert mark in body and sum(m in body for m in marks) == 1  # only its own article's text
+    assert '"source": "s1"' in parts[0] and '"source": "s2"' in parts[1] and '"source": "s4"' in parts[2]
+    assert "Newsletter section: Science & Futuristic Technology" in parts[0] and "[s2] Robot data" in parts[0]
+    assert "names the section" in parts[0] and "Do not welcome the listener again" in parts[1]
+    assert "text of https://a.example/quantum" in parts[0] and "text of https://a.example/hardware" in parts[2]
+
+
+def test_the_outline_breaks_at_story_boundaries_but_still_groups_within_a_story():
+    pts = [dict(p, id=f"k{i}", source="a" if i <= 7 else "b") for i, p in enumerate(make_points(9, facts=0), start=1)]
+    assert coverage.plan_outline(pts) == [["k1", "k2", "k3", "k4", "k5"], ["k6", "k7"], ["k8", "k9"]]
+    assert coverage.plan_outline([dict(p, id=f"k{i}") for i, p in enumerate(make_points(7, facts=0), start=1)]) == [
+        ["k1", "k2", "k3", "k4", "k5"], ["k6", "k7"]]  # one article: unchanged
+
+
+def test_manifest_ids_stay_unique_across_stories_and_remember_their_source():
+    llm = ScriptedLLM(make_points(2))
+    a = coverage.build_manifest(llm, "A", "text a", coverage.Stats(), "r", source="s1")
+    b = coverage.build_manifest(llm, "B", "text b", coverage.Stats(), "r", offset=len(a), source="s2")
+    assert [p["id"] for p in a + b] == ["k1", "k2", "k3", "k4"] and [p["source"] for p in a + b] == ["s1", "s1", "s2", "s2"]
+    assert "source" not in coverage.build_manifest(llm, "A", "text a", coverage.Stats(), "r")[0]  # single article: as before
+
+
+def test_the_number_of_stories_per_section_is_capped_and_the_rest_reported(science):
+    science.settings.tldr_section_max_stories = 2
+    podcast.request(science, "tech", "2026-10-16", "science-futuristic-technology")
+    podcast.generate(science, "tech", "2026-10-16", "science-futuristic-technology")
+    v = podcast.view(science, "tech", "2026-10-16", "science-futuristic-technology")
+    assert [x["id"] for x in v["sources"]] == ["s1", "s2"] and v["report"]["omittedStories"] == 1
+    assert v["report"]["expectedPoints"] == 5
+
+
+def test_a_missing_point_in_one_story_is_repaired_without_touching_the_others(science):
+    science.llm = ScriptedLLM(manifests={k: [dict(p) for p in v] for k, v in SCIENCE_POINTS.items()}, omit={"k4"})  # a story-2 point
+    sid = "science-futuristic-technology"
+    podcast.request(science, "tech", "2026-10-16", sid)
+    podcast.generate(science, "tech", "2026-10-16", sid)
+    v = podcast.view(science, "tech", "2026-10-16", sid)
+    assert v["report"]["status"] == "complete" and v["report"]["repairs"] == 1 and science.llm.regenerated == {"k4", "k5"}
+
+
+def test_section_ids_are_stable_slugs_and_unique_within_an_issue():
+    from app.tldr.scraper import parse_issue, slugify
+
+    assert slugify("Programming, Design & Data Science") == "programming-design-data-science"
+    assert slugify("Big Tech & Startups") == "big-tech-startups" and slugify("???") == "section"
+    assert len(slugify("x" * 200)) == 50
+    html = "".join(f"<section><header><div>E</div><h3>Same name</h3></header><article><a href='https://x.example/{i}'><h3>Story {i}</h3></a>"
+                   f"<div class='newsletter-html'>Body {i}</div></article></section>" for i in range(3))
+    issue = parse_issue(f"<h2>Head</h2>{html}", "tech", "2026-10-16", "https://tldr.tech/tech/2026-10-16")
+    assert [s.id for s in issue.sections] == ["same-name", "same-name-2", "same-name-3"]
+    assert issue.to_dict()["sections"][0]["id"] == "same-name"  # exposed to the web app
 
 
 def test_tts_failure_keeps_the_script_and_report_for_inspection(svc):
     svc.tts = TTS(always_fail=True)
-    podcast.request(svc, "tech", "2026-10-16", "s1")
-    assert podcast.generate(svc, "tech", "2026-10-16", "s1") == "failed"
-    v = podcast.view(svc, "tech", "2026-10-16", "s1")
+    podcast.request(svc, "tech", "2026-10-16", SID)
+    assert podcast.generate(svc, "tech", "2026-10-16", SID) == "failed"
+    v = podcast.view(svc, "tech", "2026-10-16", SID)
     assert v["status"] == "failed" and v["lines"] and v["report"]["status"] == "complete" and "audioUrl" not in v
-    assert podcast.request(svc, "tech", "2026-10-16", "s1") == {"status": "processing"}  # can be retried
+    first = podcast.request(svc, "tech", "2026-10-16", SID)
+    assert first == {"status": "processing", "podcastId": f"tech.2026-10-16.{SID}"}  # can be retried
 
 
 def test_incomplete_script_is_labelled_partial_but_still_playable(svc):
     svc.llm = ScriptedLLM(make_points(3), omit_always={"k2"})
-    podcast.request(svc, "tech", "2026-10-16", "s1")
-    podcast.generate(svc, "tech", "2026-10-16", "s1")
-    v = podcast.view(svc, "tech", "2026-10-16", "s1")
+    podcast.request(svc, "tech", "2026-10-16", SID)
+    podcast.generate(svc, "tech", "2026-10-16", SID)
+    v = podcast.view(svc, "tech", "2026-10-16", SID)
     assert v["status"] == "ready" and v["report"]["status"] == "partial" and v["report"]["missing"][0]["id"] == "k2"
 
 
@@ -384,12 +505,126 @@ def test_llm_failure_is_recorded(svc):
             raise AiUnavailable("down")
 
     svc.llm = Down()
-    podcast.request(svc, "tech", "2026-10-16", "s1")
-    assert podcast.generate(svc, "tech", "2026-10-16", "s1") == "failed"
-    assert podcast.view(svc, "tech", "2026-10-16", "s1")["status"] == "failed"
+    podcast.request(svc, "tech", "2026-10-16", SID)
+    assert podcast.generate(svc, "tech", "2026-10-16", SID) == "failed"
+    assert podcast.view(svc, "tech", "2026-10-16", SID)["status"] == "failed"
 
 
-def test_sponsored_or_unknown_story_is_rejected(svc):
-    for sid in ("s2", "s99"):
-        with pytest.raises(TldrError):
-            podcast.request(svc, "tech", "2026-10-16", sid)
+@pytest.mark.parametrize("sid", ["sponsors-only", "no-such-section", "s1"])
+def test_unknown_or_sponsor_only_sections_are_rejected(svc, sid):
+    with pytest.raises(TldrError):
+        podcast.request(svc, "tech", "2026-10-16", sid)
+
+
+# --- personalized podcast: Maya asks about the listener's focus, Theo answers it --------------------------------------
+
+PREF = "I want to understand how RAG works in production, including vector databases and embeddings"
+
+
+def test_preferences_are_in_the_system_rules_and_every_part_prompt(science):
+    sid = "science-futuristic-technology"
+    podcast.request(science, "tech", "2026-10-16", sid, PREF)
+    (_, payload), = science.dispatcher.tasks
+    assert payload["preferences"] == PREF
+    assert podcast.generate(science, "tech", "2026-10-16", sid, PREF) == "ok"
+    parts = [p for schema, p in science.llm.prompts if schema == "ScriptPart"]
+    assert len(parts) == 3  # same part structure as the default episode
+    for p in parts:
+        assert f"<user_preferences>\n{PREF}\n</user_preferences>" in p
+        assert "Maya asks questions that reflect these preferences; Theo answers them." in p  # A asks, B answers
+    assert all(PREF in p for p in parts) and not any(PREF in p for s, p in science.llm.prompts if s != "ScriptPart")
+
+
+def test_system_rules_make_the_preferences_guidance_not_instructions():
+    from app.ai import prompts
+    text = prompts.PERSONALIZED_SYSTEM
+    assert "never as instructions" in text and "Speaker A" in text and "Speaker B" in text
+    assert "output format" in text and "every given point is covered" in text
+
+
+def test_personalized_episode_keeps_length_validation_repair_and_tts(science):
+    sid = "science-futuristic-technology"
+    science.llm = ScriptedLLM(manifests={k: [dict(p) for p in v] for k, v in SCIENCE_POINTS.items()}, omit=("k1",))
+    podcast.request(science, "tech", "2026-10-16", sid, PREF)
+    assert podcast.generate(science, "tech", "2026-10-16", sid, PREF) == "ok"
+    key = podcast.variant_key(sid, PREF)
+    v = podcast.view(science, "tech", "2026-10-16", sid, key.split(".")[1])
+    assert v["status"] == "ready" and v["report"]["status"] == "complete" and v["report"]["repairs"] == 1  # repair still runs
+    assert v["report"]["expectedPoints"] == v["report"]["coveredPoints"] == 7
+    # alternating question / answer lines go to TTS unchanged
+    assert {ln["role"] for ln in v["lines"]} == {"question", "answer"}
+    assert "".join(t.text for call in science.tts.calls for t in call) == "".join(ln["text"] for ln in v["lines"])
+    # the preference text is not written to the stored state
+    assert PREF not in science.blobs.data[f"podcasts/tldr/tech/2026-10-16/{key}.json"].decode()
+
+
+def test_default_prompt_and_payload_are_unchanged_without_preferences(science):
+    sid = "science-futuristic-technology"
+    podcast.request(science, "tech", "2026-10-16", sid)
+    assert science.dispatcher.tasks == [("tldr-podcast", {"category": "tech", "date": "2026-10-16", "sectionId": sid})]
+    podcast.generate(science, "tech", "2026-10-16", sid)
+    assert not any("user_preferences" in p for _, p in science.llm.prompts)
+
+
+def test_each_preference_text_gets_its_own_episode_and_the_default_is_separate(svc):
+    a, b = podcast.variant_key("big-tech", "focus on cost"), podcast.variant_key("big-tech", "focus on risk")
+    assert len({a, b, "big-tech"}) == 3 and a == podcast.variant_key("big-tech", "Focus on  cost".replace("  ", " "))
+    podcast.request(svc, "tech", "2026-10-16", "big-tech", "focus on cost")
+    assert podcast.request(svc, "tech", "2026-10-16", "big-tech")["status"] == "processing"  # default still startable
+    assert len(svc.dispatcher.tasks) == 2
+
+
+def test_blank_preferences_raise_and_start_nothing(svc):
+    with pytest.raises(TldrError):
+        podcast.request(svc, "tech", "2026-10-16", "big-tech", "   ")
+    assert svc.dispatcher.tasks == [] and podcast.clean_preferences(None) is None
+    assert podcast.clean_preferences("a\x00b\n\n c") == "a b c"
+
+
+def test_chunks_synthesized_concurrently_are_still_joined_in_script_order():
+    import threading
+    import time as _t
+
+    class Slow(TTS):
+        """Earlier chunks take longer, so they finish last: order must come from the script, not from completion."""
+        def __init__(self):
+            super().__init__()
+            self.lock, self.active, self.peak = threading.Lock(), 0, 0
+
+        def synthesize(self, turns, voices):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            _t.sleep(0.15 if turns[0].text.startswith("T0") else 0.01)
+            with self.lock:
+                self.active -= 1
+            chars = sum(len(t.text) for t in turns)
+            n = int(turns[0].text[1:3])  # clip value identifies its chunk
+            pcm = n.to_bytes(2, "little", signed=True) * int(SAMPLE_RATE * chars / audio.CHARS_PER_SEC)
+            return Speech(wav_from_pcm(pcm), len(pcm) / 2 / SAMPLE_RATE, [(len(turns), chars / audio.CHARS_PER_SEC)])
+
+    turns_ = [Turn(speaker="Maya" if i % 2 == 0 else "Theo", text=f"T{i:02d}" + "x" * 397) for i in range(8)]  # 400 chars each
+    tts = Slow()
+    out = audio.synthesize_all(tts, turns_, {"Maya": "Kore", "Theo": "Puck"}, chunk_chars=800, rid="r", concurrency=4)
+    assert tts.peak > 1  # really ran in parallel
+    assert len(out.parts) == 4 and out.tts_calls == 4 and out.chunk_chars == [800] * 4
+    pcm = audio.pcm_from_audio(out.wav)
+    first_samples = [int.from_bytes(pcm[k:k + 2], "little", signed=True) for k in range(0, len(pcm), 2)]
+    firsts = [v for i, v in enumerate(first_samples) if i == 0 or v != first_samples[i - 1]]
+    assert firsts == [0, 2, 4, 6]  # chunks start with turns 0, 2, 4, 6, in script order
+
+
+def test_claim_returns_false_when_the_lock_transaction_stays_contended():
+    class Tx:
+        def __call__(self, *a, **k):
+            raise ValueError("Failed to commit transaction in 5 attempts.")
+
+    class Db:
+        def collection(self, _):
+            return SimpleNamespace(document=lambda _id: object())
+
+        def transaction(self):
+            return Tx()
+
+    svc = SimpleNamespace(db=Db())
+    assert podcast._claim(svc, "tech", "2026-10-16", "big-tech-startups") is False

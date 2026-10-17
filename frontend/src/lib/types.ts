@@ -9,6 +9,8 @@ export interface Source {
   url: string | null;
   linkOnly: boolean;
   reason?: string | null;
+  /** The declared interest that matched this story (project, goal, ...), when semantic ranking chose it. */
+  matchedFacet?: { id: string; type: string | null; text: string | null } | null;
 }
 
 export interface ScriptLine {

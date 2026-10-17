@@ -52,6 +52,7 @@ class Story:
     cluster_id: str
     covered_by: int
     link_only: bool = False
+    url: str | None = None
 
 
 @dataclass

@@ -17,6 +17,7 @@ from app.learner import service as learner
 from app.logs import exc_fields, get_logger, log
 from app.pipeline.score import Scored, Story, UserSignals, rank
 from app.pipeline.validate import render_script_text, repair_plan, script_problems
+from app.recommend.service import semantic_rank
 from app.services import Services
 from app.store import now, unvec
 
@@ -63,6 +64,7 @@ def to_story(it: dict[str, Any], clusters: dict[str, tuple[str, int]]) -> Story:
         id=it["id"], headline=it["headline"], blurb=it["blurb"], category=it.get("category", "other"),
         entities=list(it.get("entities") or []), sender_id=it["senderId"], sender_name=it.get("senderName", ""),
         embedding=unvec(it.get("embedding")), cluster_id=cid, covered_by=count, link_only=bool(it.get("linkOnly")),
+        url=it.get("url"),
     )
 
 
@@ -83,7 +85,11 @@ def score_stories(svc: Services, uid: str, briefing_id: str, items: list[dict[st
                   clusters: dict[str, tuple[str, int]], wildcard_on: bool) -> tuple[list[Scored], UserSignals]:
     signals = user_signals(svc, uid, briefing_id)
     stories = unique_stories(items, clusters)
-    ranked = rank(stories, signals, now(), wildcard_on=wildcard_on)
+    # Semantic ranking (app/recommend) when the user has embedded interest facets; otherwise, and for users
+    # without a profile, the original scorer below is used unchanged.
+    ranked = semantic_rank(svc, uid, briefing_id, stories, signals, wildcard_on)
+    if ranked is None:
+        ranked = rank(stories, signals, now(), wildcard_on=wildcard_on)
     log(logger, logging.INFO, "score_done", uid=uid, briefingId=briefing_id, items=len(items), stories=len(stories),
         ranked=len(ranked), muted=len(stories) - len(ranked), goals=len(signals.goals), muteTopics=len(signals.mute_topics),
         knownConcepts=len(signals.known_concepts), heardClusters=len(signals.heard_clusters),

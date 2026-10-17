@@ -147,7 +147,7 @@ def llm_trace(bid: str, user: CurrentUser = Depends(current_user), svc: Services
 
 
 class EventIn(BaseModel):
-    type: Literal["play", "skip", "replay", "openSource", "lessLikeThis", "cardRemoved", "speedChange", "pause", "complete"]
+    type: Literal["play", "skip", "replay", "openSource", "lessLikeThis", "knewThis", "cardRemoved", "speedChange", "pause", "complete"]
     briefingId: str | None = Field(default=None, max_length=64)
     segId: str | None = Field(default=None, max_length=32)
     itemId: str | None = Field(default=None, max_length=64)

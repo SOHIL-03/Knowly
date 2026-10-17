@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { AppShell } from '../components/AppShell';
+import { TldrDigest } from '../components/TldrDigest';
 import { Banner, Button, Card, Skeleton } from '../components/ui';
 import { ApiError, get, patch, post } from '../lib/api';
 import { reviewPref, setReviewPref } from '../lib/review';
@@ -159,6 +160,9 @@ export function Today() {
                       {minutes(s.durationSec)} · {s.type === 'review' ? 'review' : `${s.itemIds.length} ${s.itemIds.length === 1 ? 'story' : 'stories'}`} · {audioLabel[s.audioStatus]}
                     </p>
                     <p className="mt-1 text-caption italic text-accent">{s.whyChosen}</p>
+                    {[...new Set(s.sources.filter((x) => x.matchedFacet && x.reason).map((x) => x.reason as string))].slice(0, 2).map((r) => (
+                      <p key={r} className="mt-0.5 text-caption text-ink-3">{r}</p>
+                    ))}
                     {s.wildcardItemId && (
                       <p className="mt-1 inline-flex items-center gap-1 text-caption text-ink-2">
                         <Sparkles className="size-3.5" aria-hidden /> Includes 1 wildcard
@@ -216,6 +220,8 @@ export function Today() {
               <RefreshCw className="size-4" aria-hidden /> Make a new briefing
             </Button>
           </div>
+
+          <TldrDigest />
 
           <div className="fixed inset-x-0 bottom-16 z-20 px-4 md:static md:mt-6 md:px-0">
             <Button full className="mx-auto max-w-xl shadow-lg md:shadow-none" disabled={!visible.length} onClick={() => navigate(`/play/${encodeURIComponent(briefing.id)}`)}>
