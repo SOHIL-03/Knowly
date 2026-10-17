@@ -24,7 +24,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from google.cloud import firestore
+from google.api_core.exceptions import AlreadyExists
 
 from app.ai.client import QUOTA_MESSAGE, AiOutputInvalid, AiQuotaExceeded, AiUnavailable
 from app.audio.tts import Turn, line_timings
@@ -69,19 +69,20 @@ def _claim(svc: Services, category: str, date: str, key: str) -> bool:
     if getattr(svc, "db", None) is None:
         return True
     ref = _lock_ref(svc, category, date, key)
-    tx = svc.db.transaction()
-
-    @firestore.transactional
-    def txn(t) -> bool:
-        at = (ref.get(transaction=t).to_dict() or {}).get("at")
+    try:
+        ref.create({"at": now()})  # atomic and lock-free: exactly one concurrent caller succeeds, the rest get AlreadyExists
+        return True
+    except AlreadyExists:
+        pass
+    try:
+        snap = ref.get()
+        at = (snap.to_dict() or {}).get("at")
         if at and now() - at < STALE:
             return False
-        t.set(ref, {"at": now()})
+        # stale claim of a dead worker: take over only if nobody else already did (compare-and-swap on the doc's version)
+        ref.update({"at": now()}, option=svc.db.write_option(last_update_time=snap.update_time))
         return True
-
-    try:
-        return txn(tx)
-    except Exception as exc:  # contended lock (ABORTED after retries): another request holds it, so it is the one generating
+    except Exception as exc:  # lost the takeover race or the lock vanished: someone else owns it
         log(logger, logging.WARNING, "podcast_claim_contended", error=type(exc).__name__)
         return False
 

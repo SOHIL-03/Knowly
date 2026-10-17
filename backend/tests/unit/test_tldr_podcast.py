@@ -614,17 +614,41 @@ def test_chunks_synthesized_concurrently_are_still_joined_in_script_order():
     assert firsts == [0, 2, 4, 6]  # chunks start with turns 0, 2, 4, 6, in script order
 
 
-def test_claim_returns_false_when_the_lock_transaction_stays_contended():
-    class Tx:
-        def __call__(self, *a, **k):
-            raise ValueError("Failed to commit transaction in 5 attempts.")
+class _LockDb:
+    """Minimal stand-in for a Firestore collection holding one lock doc (create is atomic, update is version-checked)."""
 
-    class Db:
-        def collection(self, _):
-            return SimpleNamespace(document=lambda _id: object())
+    def __init__(self, at=None):
+        self.at, self.version = at, 1
 
-        def transaction(self):
-            return Tx()
+    def collection(self, _):
+        return SimpleNamespace(document=lambda _id: self)
 
-    svc = SimpleNamespace(db=Db())
-    assert podcast._claim(svc, "tech", "2026-10-16", "big-tech-startups") is False
+    def write_option(self, last_update_time):
+        return last_update_time
+
+    def create(self, data):
+        from google.api_core.exceptions import AlreadyExists
+
+        if self.at is not None:
+            raise AlreadyExists("exists")
+        self.at = data["at"]
+
+    def get(self):
+        return SimpleNamespace(to_dict=lambda: {"at": self.at}, update_time=self.version)
+
+    def update(self, data, option):
+        if option != self.version:
+            raise ValueError("precondition failed")
+        self.at, self.version = data["at"], self.version + 1
+
+
+def test_claim_is_won_by_exactly_one_caller_and_never_blocks():
+    svc = SimpleNamespace(db=_LockDb())
+    assert podcast._claim(svc, "tech", "2026-10-16", "s") is True
+    assert podcast._claim(svc, "tech", "2026-10-16", "s") is False
+
+
+def test_claim_takes_over_a_stale_lock_once():
+    svc = SimpleNamespace(db=_LockDb(at=podcast.now() - podcast.STALE * 2))
+    assert podcast._claim(svc, "tech", "2026-10-16", "s") is True
+    assert podcast._claim(svc, "tech", "2026-10-16", "s") is False
