@@ -280,7 +280,7 @@ class FakeLLM:
         return AnswerEvaluations.model_validate({"evaluations": out})
 
     # --- streaming ------------------------------------------------------------------------------
-    def stream_text(self, tier: str, system: str, prompt: str, *, temperature: float = 0.3) -> Iterator[str]:
+    def stream_text(self, tier: str, system: str, prompt: str, *, temperature: float = 0.3, cancel=None) -> Iterator[str]:
         self.calls.append((tier, "stream"))
         if system == prompts.ASK_GENERAL_SYSTEM:
             yield "This is a general answer."
@@ -316,13 +316,12 @@ class FakeOpenAIClient:
     def _create(self, **kw):
         from types import SimpleNamespace
 
-        from app.ai import schemas
-
         self.requests.append(kw)
         if self.fail is not None:
             raise self.fail
         system, user = kw["messages"][0]["content"], kw["messages"][1]["content"]
-        if kw.get("stream"):
+        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        if kw.get("stream") and not kw.get("response_format"):
             plain = system.removesuffix("\n\n" + INJECTION_GUARD)
 
             def chunks():
@@ -330,18 +329,79 @@ class FakeOpenAIClient:
                     yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=None)], usage=None)
 
             return chunks()
-        # The schema the request asked for is embedded in the system prompt; find which model it is.
-        candidates = {
-            cls: json.dumps(cls.model_json_schema(), separators=(",", ":"))
-            for cls in vars(schemas).values()
-            if isinstance(cls, type) and issubclass(cls, BaseModel) and cls is not BaseModel
-        }
-        schema = max((cls for cls, text in candidates.items() if text in system), key=lambda cls: len(candidates[cls]))
-        out = self.fake.generate_json("flash", system, user, schema)
-        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=50, total_tokens=150)
-        message = SimpleNamespace(content=out.model_dump_json(), refusal=None)
-        self.responses.append(message.content)
+        content = json_reply(self.fake, system, user)
+        self.responses.append(content)
+        if kw.get("stream"):  # streamed JSON (the fallback of app/ai/text_llm.py)
+            def json_chunks():
+                for part in split3(content):
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=part, refusal=None), finish_reason=None)], usage=None)
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None, refusal=None), finish_reason="stop")], usage=None)
+                yield SimpleNamespace(choices=[], usage=usage)
+
+            return json_chunks()
+        message = SimpleNamespace(content=content, refusal=None)
         return SimpleNamespace(model=kw["model"], usage=usage, choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+
+def json_reply(fake: FakeLLM, system: str, user: str) -> str:
+    """FakeLLM's answer for a structured request. The schema the request asked for is embedded in the system prompt."""
+    from app.ai import schemas
+
+    candidates = {
+        cls: json.dumps(cls.model_json_schema(), separators=(",", ":"))
+        for cls in vars(schemas).values()
+        if isinstance(cls, type) and issubclass(cls, BaseModel) and cls is not BaseModel
+    }
+    schema = max((cls for cls, text in candidates.items() if text in system), key=lambda cls: len(candidates[cls]))
+    return fake.generate_json("flash", system, user, schema).model_dump_json()
+
+
+def split3(text: str) -> list[str]:
+    n = max(1, len(text) // 3)
+    return [text[:n], text[n:2 * n], text[2 * n:]]
+
+
+class FakeGeminiTextClient:
+    """Stands in for genai.Client on the streaming text path (client.aio.models.generate_content_stream), answering with
+    FakeLLM's deterministic output split over several chunks, so the real TextLLM runs in the pipeline. With
+    `hang=True` it never answers (every first-token deadline expires)."""
+
+    def __init__(self, hang: bool = False) -> None:
+        from types import SimpleNamespace
+
+        self.fake = FakeLLM()
+        self.hang = hang
+        self.requests: list[dict] = []
+        self.aio = SimpleNamespace(models=SimpleNamespace(generate_content_stream=self._start))
+
+    async def _start(self, *, model, contents, config):
+        import asyncio
+        from types import SimpleNamespace
+
+        self.requests.append({"model": model, "contents": contents, "config": config})
+        system = config.system_instruction
+        if self.hang:
+            pieces: list[str] = []
+        elif config.response_mime_type == "application/json":
+            pieces = split3(json_reply(self.fake, system, contents))
+        else:
+            pieces = list(self.fake.stream_text("flash", system.removesuffix("\n\n" + INJECTION_GUARD), contents))
+
+        def res(text=None, finish=None):
+            parts = [SimpleNamespace(text=text, thought=None)] if text else []
+            return SimpleNamespace(prompt_feedback=None, usage_metadata=None if finish is None else SimpleNamespace(
+                prompt_token_count=80, candidates_token_count=40, total_token_count=120),
+                candidates=[SimpleNamespace(content=SimpleNamespace(parts=parts),
+                                            finish_reason=SimpleNamespace(name=finish) if finish else None)])
+
+        async def stream():
+            if self.hang:
+                await asyncio.sleep(3600)
+            for p in pieces:
+                yield res(p)
+            yield res(finish="STOP")
+
+        return stream()
 
 
 class InMemoryBlobs:

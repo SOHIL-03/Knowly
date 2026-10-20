@@ -286,6 +286,10 @@ class GeminiKeyPool:
             log(logger, logging.INFO, "gemini_client_created", key=key.name, vertex=self.vertex)
         return client
 
+    def client_for(self, key: ApiKey) -> Any:
+        """The cached client for one key, for callers that run their own attempt loop (app/ai/text_llm.py)."""
+        return self._client(key)
+
     def call[R](self, what: str, fn: Callable[[Any], R]) -> R:
         """Runs fn(client) starting at the last working key, moving on (and staying) when a key fails. Returns fn's result
         unchanged; raises GeminiError."""

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.pipeline.runner import run_briefing
 from tests.integration.conftest import User
 
@@ -225,6 +227,65 @@ def test_briefing_runs_through_openai_text_generation_into_the_unchanged_tts(ash
     assert len(svc.tts.calls) == len(b["segments"])
     for turns, voices in svc.tts.calls:
         assert voices == {"Maya": "Kore", "Theo": "Puck"} and {t.speaker for t in turns} <= {"Maya", "Theo"}
+
+
+def _text_llm(svc, *gemini_clients, **settings):
+    from app.ai.gemini_keys import ApiKey, GeminiKeyPool
+    from app.ai.openai_llm import OpenAILLM
+    from app.ai.text_llm import TextLLM
+    from app.config import Settings
+    from tests.fakes import FakeOpenAIClient
+
+    s = Settings(openai_api_key="sk-test-0123456789abcdef", openai_max_retries=0, **settings)
+    clients = {f"GEMINI_API_KEY_{i + 1}": c for i, c in enumerate(gemini_clients)}
+    pool = GeminiKeyPool(s, keys=[ApiKey(n, f"AIzaSyPIPE{i}" + "z" * 24) for i, n in enumerate(clients)],
+                         client_factory=lambda k: clients[k.name])
+    oa = FakeOpenAIClient()
+    svc.llm = TextLLM(s, openai=OpenAILLM(s, client=oa), pool=pool)
+    return oa
+
+
+def _ask(u, b) -> dict:
+    r = u.post("/ask", {"briefingId": b["id"], "segId": b["segments"][0]["id"], "question": "What does this mean for my index?"})
+    assert r.status_code == 200, r.text
+    events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
+    assert events[-1]["type"] == "final"
+    return events[-1]
+
+
+def test_briefing_and_ask_run_on_streamed_gemini_text_with_openai_unused(asha, svc):
+    """Real TextLLM (mocked Gemini streams) -> real B1-B10 stages -> the existing TTS, then a streamed Ask answer."""
+    from tests.fakes import FakeGeminiTextClient
+
+    gemini = FakeGeminiTextClient()
+    oa = _text_llm(svc, gemini, FakeGeminiTextClient())
+    assert asha.post("/briefings/generate", {"kind": "daily"}).status_code == 202
+    b = today(asha)
+    assert b["status"] == "ready", b.get("error")
+    assert gemini.requests and {r["model"] for r in gemini.requests} == {"gemini-3.8-flash"}
+    assert oa.requests == []  # no fallback was needed
+    for s in b["segments"]:
+        assert {line["speaker"] for line in s["script"]} == {"A", "B"} and s["audioStatus"] == "ok"
+
+    final = _ask(asha, b)
+    assert final["grounded"] is True and final["citations"]
+    assert oa.requests == []
+
+
+def test_briefing_and_ask_fall_back_to_streamed_openai_when_every_gemini_key_stalls(asha, svc):
+    from tests.fakes import FakeGeminiTextClient
+
+    stalled = [FakeGeminiTextClient(hang=True) for _ in range(4)]
+    oa = _text_llm(svc, *stalled, gemini_first_token_timeout_seconds=0.05)
+    assert asha.post("/briefings/generate", {"kind": "daily"}).status_code == 202
+    b = today(asha)
+    assert b["status"] == "ready", b.get("error")
+    assert all(c.requests for c in stalled)  # every key was tried
+    assert oa.requests and all(r["stream"] is True for r in oa.requests)
+    assert {r["response_format"]["type"] for r in oa.requests if "response_format" in r} == {"json_object"}
+
+    final = _ask(asha, b)
+    assert final["grounded"] is True and final["citations"]
 
 
 # --- review workflow: see the OpenAI responses, then start TTS by hand ---------------------------------

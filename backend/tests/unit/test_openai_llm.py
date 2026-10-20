@@ -294,9 +294,10 @@ def test_stream_without_key_is_a_configuration_error():
 
 # --- migration completeness -----------------------------------------------------------------------
 
-def test_no_gemini_text_generation_remains_in_the_app():
-    """Gemini is allowed only for embeddings (client.py), TTS (tts.py) and speech-to-text (stt.py, which sends an audio part
-    and uses generate_content only to transcribe it); never for generating text."""
+def test_gemini_text_generation_lives_only_in_text_llm():
+    """Gemini text generation happens only in text_llm.py (streamed, with OpenAI as the fallback). Elsewhere Gemini is used
+    only for embeddings (client.py), TTS (tts.py) and speech-to-text (stt.py, which sends an audio part and uses
+    generate_content only to transcribe it)."""
     from pathlib import Path
 
     app = Path(__file__).resolve().parents[2] / "app"
@@ -305,27 +306,45 @@ def test_no_gemini_text_generation_remains_in_the_app():
         text = f.read_text(encoding="utf-8")
         if f.name == "stt.py":
             assert "generate_content" in text and "Part.from_bytes" in text, "stt.py must transcribe audio, nothing else"
+        elif f.name == "text_llm.py":
+            assert "generate_content_stream" in text
         else:
             assert "generate_content" not in text, f"Gemini text generation call in {f.name}"
         assert "GeminiLLM" not in text, f"GeminiLLM referenced in {f.name}"
         if "google.genai" in text or "from google import genai" in text:
             users[f.name] = True
-    assert set(users) == {"gemini_keys.py", "client.py", "stt.py"}  # key pool factory, embedding config types, STT audio types
+    # key pool factory, embedding config types, STT audio types, text streaming config types
+    assert set(users) == {"gemini_keys.py", "client.py", "stt.py", "text_llm.py"}
 
 
-def test_services_wire_openai_for_text_and_leave_embeddings_and_tts_on_gemini(monkeypatch):
-    from app import services
-    from app.ai.client import GeminiEmbedder
-    from app.audio.tts import GeminiSpeaker
-
+def _stub_infra(monkeypatch):
     for mod, name in (("app.infra.firebase", "firestore_client"), ("app.infra.blobs", "GcsBlobStore"),
                       ("app.infra.secrets", "default_secret_store"), ("app.notify", "FcmNotifier"),
                       ("app.dispatch", "build_dispatcher")):
         monkeypatch.setattr(f"{mod}.{name}", lambda *a, **k: object())
+
+
+def test_services_wire_gemini_streaming_with_openai_fallback_and_leave_embeddings_and_tts_alone(monkeypatch):
+    from app import services
+    from app.ai.client import GeminiEmbedder
+    from app.ai.text_llm import TextLLM
+    from app.audio.tts import GeminiSpeaker
+
+    _stub_infra(monkeypatch)
     svc = services.build_services(Settings(openai_api_key=KEY))
-    assert isinstance(svc.llm, OpenAILLM) and svc.llm.model == "gpt-4o-mini"
+    assert isinstance(svc.llm, TextLLM) and svc.llm.model == "gemini-3.8-flash"
+    assert isinstance(svc.llm.openai, OpenAILLM) and svc.llm.openai.model == "gpt-4o-mini"
     assert isinstance(svc.embedder, GeminiEmbedder) and isinstance(svc.tts, GeminiSpeaker)
     assert svc.embedder.pool is svc.tts.pool  # TTS keeps the same shared Gemini key pool as before
+    assert svc.llm.pool is not svc.tts.pool  # a slow text answer never moves the TTS / embedding key
+
+
+def test_streaming_switch_off_restores_openai_only_text(monkeypatch):
+    from app import services
+
+    _stub_infra(monkeypatch)
+    svc = services.build_services(Settings(openai_api_key=KEY, llm_streaming_enabled=False))
+    assert type(svc.llm) is OpenAILLM and svc.llm.model == "gpt-4o-mini"
 
 
 # --- response capture for the review preview ----------------------------------------------------------

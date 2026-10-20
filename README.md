@@ -2,7 +2,7 @@
 
 Knowly reads the newsletters you already get, regroups the stories around what you are building, turns them into a short spoken briefing, and checks what you learned after each segment. It keeps a per-concept learner model, so later briefings are pitched at the right level.
 
-This repository implements *Knowly Architecture, Database, Features and UI, Draft v3 (15 Oct 2026)*, with one product decision on top: **all audio is made with Gemini text-to-speech** and **all text generation uses OpenAI `gpt-4o-mini`** (NotebookLM is not used). Section numbers below refer to the v3 document.
+This repository implements *Knowly Architecture, Database, Features and UI, Draft v3 (15 Oct 2026)*, with one product decision on top: **all audio is made with Gemini text-to-speech** and **text generation streams from Gemini with OpenAI `gpt-4o-mini` as the fallback** (NotebookLM is not used). Section numbers below refer to the v3 document.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Browser (Vite + React PWA, Firebase Hosting)
                     ├─ Cloud Scheduler ─► /internal/scheduler/dispatch (every 5 min), /renew-watches (daily)
                     └─ Gmail users.watch ─► Pub/Sub gmail-events ─► /internal/pubsub/gmail (10-minute debounce)
 Data: Firestore (vector fields) · Cloud Storage (WAV audio, raw HTML with a 7-day expiry) · Secret Manager (OpenAI key, Gemini keys, Gmail tokens)
-AI:   OpenAI gpt-4o-mini (OPENAI_MODEL) for all text work (parse, plans, scripts, Ask, quiz, grading, faithfulness) · gemini-embedding-001 (768-d)
+AI:   Gemini gemini-3.8-flash (streamed, per-key first-token deadline) then OpenAI gpt-4o-mini for all text work (parse, plans, scripts, Ask, quiz, grading, faithfulness) · gemini-embedding-001 (768-d)
       Gemini TTS gemini-3.8-flash-tts: multi-speaker for the podcast, single-speaker for spoken answers
 ```
 
@@ -92,12 +92,14 @@ Run two scripts, each in its own terminal (Git Bash on Windows):
 
 Manual equivalent: `cd frontend && npm run emulators`, then `cd backend && python -m uvicorn app.main:app --reload --port 8000`, then `cd frontend && npm run dev`.
 
-**OpenAI text generation.** Every text call (item extraction, whole-email summary, segment plan, podcast script, faithfulness check, Ask, quiz, grading, Apply, rephrase, concepts, profile) goes through `backend/app/ai/openai_llm.py` with `OPENAI_API_KEY` and `OPENAI_MODEL` (default `gpt-4o-mini`). The key stays on the backend. One client is created on first use and reused.
+**Text generation (Gemini streaming, OpenAI fallback).** Every text call (item extraction, whole-email summary, segment plan, podcast script, faithfulness check, Ask, quiz, grading, Apply, rephrase, concepts, profile) goes through `backend/app/ai/text_llm.py`. Each request streams from `GEMINI_TEXT_MODEL` (default `gemini-3.8-flash`), starting at the Gemini key that worked last:
 
-- **Structured output:** JSON mode, with the Pydantic model's JSON Schema in the system prompt. The reply is validated with the same model; an invalid reply is retried once with the validation error, then raises. Prompts and schemas are unchanged.
-- **Retries:** 429 (rate limit), 5xx and network/timeout errors are retried with backoff, at most `OPENAI_MAX_RETRIES` (default 2) times. Exhausted quota (`insufficient_quota`), authentication, unknown model and bad requests fail at once. Streaming retries only before the first chunk.
-- **No fallback:** if OpenAI fails the request fails with the app's usual error; Gemini is never used for text.
-- **Usage logging:** each call logs model, latency and input/output/total tokens from the API response (`openai_call`, `openai_stream_done`), plus failed attempts (`openai_attempt_failed`). Keys are never logged.
+- **First-token deadline:** a key that has not produced its first non-empty text within `GEMINI_FIRST_TOKEN_TIMEOUT_SECONDS` (default 3, connection included; headers, metadata and thought parts do not count) is cancelled (its HTTP stream is closed) and the next key is tried at once. Quota, rate-limit, auth, 5xx and network errors also move to the next key at once. Bad requests, unknown models and unknown errors skip the remaining keys. With four keys, the worst case before OpenAI starts is about 4 × the deadline.
+- **OpenAI fallback:** when every key failed, `backend/app/ai/openai_llm.py` streams the same request from `OPENAI_MODEL` (default `gpt-4o-mini`) with no first-token deadline, retrying 429/5xx/network errors at most `OPENAI_MAX_RETRIES` times before the first chunk. There is no loop back to Gemini.
+- **Failure after text started:** reported as `AiStreamInterrupted` and never continued on another key or provider. Only structured (JSON) calls, which have shown nothing yet, drop the partial text and ask OpenAI once for the whole answer.
+- **Structured output:** the stream is buffered, then validated with the Pydantic model exactly as before (JSON mode, schema in the system prompt, one retry with the validation error). Callers still get complete objects; only Ask streams to the browser, and a client disconnect cancels its generation without starting a fallback.
+- **Logging:** `llm_stream_attempt` (each failed key: `keyIndex`, `status` such as `first_token_timeout` or `rate_limited`, `ttftMs`, `fallbackTo`), `llm_stream_success` (provider, `ttftMs` and rolling `ttftP50`/`P95`/`P99`), `llm_fallback` (reason such as `all_gemini_keys_exhausted`), `llm_stream_interrupted`, and `llm_stream_done` (provider, model, attempts, total latency, status, tokens). Keys are never logged.
+- **Switch:** `LLM_STREAMING_ENABLED=false` restores OpenAI-only text generation.
 
 **Reviewing OpenAI responses before audio.** Tick "Review OpenAI responses and the script before audio" on the Today screen (or set `REVIEW_BEFORE_AUDIO=true` in `backend/.env` as the server default), then make a briefing.
 
@@ -105,7 +107,7 @@ Manual equivalent: `cd frontend && npm run emulators`, then `cd backend && pytho
 - **Script review:** each segment waits in the `review` state with the full script (speaker labels kept, scrollable), a raw-JSON view, Copy, and optional Edit. **Generate Audio** then runs the existing Gemini TTS on exactly that text. If you edited it, the segment is marked `scriptEdited` and the original is kept in `scriptOriginal`.
 - **Not covered:** Ask, quiz, grading and "go deeper" segments are generated on demand and are not part of the preview (deeper segments still make audio automatically).
 
-**Gemini API keys and quota (embeddings and audio only).** Gemini still provides `gemini-embedding-001` embeddings and all text-to-speech (`gemini-3.8-flash-tts`); that code and its credentials (`GEMINI_API_KEY_1` … `_10`, `GEMINI_TTS_MODEL`, voices) are unchanged. Free-tier keys allow only a few requests per model per day.
+**Gemini API keys and quota.** Gemini provides text generation (above), `gemini-embedding-001` embeddings and all text-to-speech (`gemini-3.8-flash-tts`); the embedding and TTS code and its credentials (`GEMINI_API_KEY_1` … `_10`, `GEMINI_TTS_MODEL`, voices) are unchanged. Text uses the same keys through its own key pool, so a slow text answer never moves the key TTS uses. Free-tier keys allow only a few requests per model per day.
 
 - **Up to 10 keys:** set `GEMINI_API_KEY_1` … `GEMINI_API_KEY_10`. Every request starts with key 1 and tries the keys in order, moving to the next key only when the current one is out of quota. The next request starts at key 1 again.
 - **Rate limits and overload:** a short rate limit is retried on the same key after the server's suggested delay (at most twice). After that the request moves to the next key. A "model overloaded" error (503) is retried but never switches keys.

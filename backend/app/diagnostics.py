@@ -64,6 +64,9 @@ def log_startup(settings: Settings) -> None:
         project=settings.gcp_project, bucket=settings.storage_bucket,
         geminiVertex=settings.gemini_use_vertex, geminiKeys=key_names,
         openaiModel=settings.openai_model, openaiConfigured=bool(settings.openai_api_key.strip()),
+        llmStreaming=settings.llm_streaming_enabled, geminiTextModel=settings.gemini_text_model,
+        geminiFirstTokenTimeoutSeconds=settings.gemini_first_token_timeout_seconds,
+        openaiStreaming=settings.openai_streaming_enabled,
         embedModel=settings.gemini_embed_model, ttsModel=settings.gemini_tts_model,
         emulators={n: os.environ[n] for n in EMULATOR_VARS if os.environ.get(n)},
         caBundles=ca_bundle_status(),
@@ -79,6 +82,6 @@ def log_startup(settings: Settings) -> None:
             log(logger, logging.WARNING, "ca_bundle_missing", variable=name, path=info["path"],
                 hint="API calls will fail with FileNotFoundError; unset it or point it at an existing file")
     if not settings.openai_api_key.strip():
-        log(logger, logging.WARNING, "openai_not_configured", hint="Set OPENAI_API_KEY in backend/.env (all text generation)")
+        log(logger, logging.WARNING, "openai_not_configured", hint="Set OPENAI_API_KEY in backend/.env (text fallback after Gemini)")
     if not key_names and not settings.gemini_use_vertex:
-        log(logger, logging.WARNING, "gemini_not_configured", hint="Set GEMINI_API_KEY_1 in backend/.env (embeddings and audio)")
+        log(logger, logging.WARNING, "gemini_not_configured", hint="Set GEMINI_API_KEY_1 in backend/.env (text, embeddings and audio)")
