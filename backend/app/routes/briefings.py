@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.ai import trace
 from app.briefings import briefing_view, create_briefing, latest_briefing_id, next_regeneration_id
 from app.checkpoint import check_limit, record_events, reorder
 from app.deps import CurrentUser, current_user, services
@@ -143,7 +144,8 @@ def llm_trace(bid: str, user: CurrentUser = Depends(current_user), svc: Services
     enabled = bool((snap.to_dict() or {}).get("reviewBeforeAudio"))
     raw = svc.blobs.get_text(trace_blob_path(user.uid, bid)) if enabled else None
     data = json.loads(raw) if raw else {}
-    return {"enabled": enabled, "model": svc.settings.openai_model, "entries": data.get("entries", [])}
+    entries = data.get("entries", [])
+    return {"enabled": enabled, "model": trace.models_used(entries, svc.settings.openai_model), "entries": entries}
 
 
 class EventIn(BaseModel):

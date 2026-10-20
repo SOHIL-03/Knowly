@@ -78,6 +78,12 @@ def set_context(**context: Any) -> None:
         sink.context = context
 
 
+def models_used(entries: list[dict[str, Any]], default: str) -> str:
+    """The models that actually answered (Gemini or the OpenAI fallback), for the preview header."""
+    models = sorted({e["model"] for e in entries if e.get("model")})
+    return ", ".join(models) or default
+
+
 def record(step: str, **fields: Any) -> None:
     sink = _sink.get()
     if sink:

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import iterate_in_threadpool
 
 from app import checkpoint as cp
-from app.ai.client import QUOTA_MESSAGE, AiOutputInvalid, AiQuotaExceeded, AiUnavailable
+from app.ai.client import QUOTA_MESSAGE, AiCancelled, AiOutputInvalid, AiQuotaExceeded, AiUnavailable
 from app.deps import CurrentUser, current_user, services
 from app.errors import ApiError
 from app.services import Services
@@ -38,11 +41,21 @@ def _ai_errors(fn):
         raise ApiError(502, "ai_invalid", "The assistant returned an answer we could not check. Try again.")
 
 
+async def _watch_disconnect(request: Request, cancel: threading.Event) -> None:
+    while not cancel.is_set():
+        if await request.is_disconnected():
+            cancel.set()
+            return
+        await asyncio.sleep(0.25)
+
+
 @router.post("/ask")
-def ask(body: AskIn, user: CurrentUser = Depends(current_user), svc: Services = Depends(services)):
+def ask(body: AskIn, request: Request, user: CurrentUser = Depends(current_user), svc: Services = Depends(services)):
     """Server-sent events: delta / reset events while streaming, then one final event with the
-    validated answer and citations (newsletter name + link resolved on the server)."""
-    gen = cp.ask_stream(svc, user.uid, body.briefingId, body.segId, body.question.strip())
+    validated answer and citations (newsletter name + link resolved on the server). When the client
+    disconnects, generation is cancelled and no fallback provider is started."""
+    cancel = threading.Event()
+    gen = cp.ask_stream(svc, user.uid, body.briefingId, body.segId, body.question.strip(), cancel=cancel)
     try:
         first = next(gen)  # surface limit / not-found errors as normal JSON errors
     except StopIteration:
@@ -52,15 +65,26 @@ def ask(body: AskIn, user: CurrentUser = Depends(current_user), svc: Services = 
     except AiUnavailable:
         raise ApiError(503, "ai_unavailable", "The assistant is unavailable right now. Try again shortly.")
 
-    def stream():
+    def events():
         try:
             if first is not None:
                 yield f"data: {json.dumps(first, default=str)}\n\n"
             for ev in gen:
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
+        except AiCancelled:
+            return  # the client is gone; nothing to send
         except AiUnavailable as exc:
             message = QUOTA_MESSAGE if isinstance(exc, AiQuotaExceeded) else "The assistant is unavailable right now."
             yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
+
+    async def stream():
+        watcher = asyncio.create_task(_watch_disconnect(request, cancel))
+        try:
+            async for chunk in iterate_in_threadpool(events()):
+                yield chunk
+        finally:  # also runs when the response is abandoned on disconnect
+            cancel.set()
+            watcher.cancel()
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

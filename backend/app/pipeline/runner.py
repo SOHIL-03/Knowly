@@ -102,7 +102,8 @@ def _run(svc: Services, uid: str, bid: str, owner: str) -> str:
     if hold_audio:
         # Keep the exact OpenAI responses of this run for the preview; audio waits for the user.
         def persist(entries: list[dict[str, Any]]) -> None:
-            svc.blobs.put_text(trace_blob_path(uid, bid), json.dumps({"model": svc.settings.openai_model, "entries": entries}),
+            model = trace.models_used(entries, svc.settings.openai_model)
+            svc.blobs.put_text(trace_blob_path(uid, bid), json.dumps({"model": model, "entries": entries}),
                                "application/json")
 
         trace_token = trace.start(trace.TraceSink(persist))

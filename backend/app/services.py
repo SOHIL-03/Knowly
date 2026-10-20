@@ -45,7 +45,7 @@ _services: Services | None = None
 def build_services(settings: Settings | None = None) -> Services:
     from app.ai.client import GeminiEmbedder
     from app.ai.gemini_keys import GeminiKeyPool
-    from app.ai.openai_llm import OpenAILLM
+    from app.ai.text_llm import build_text_llm
     from app.audio.stt import build_transcriber
     from app.audio.tts import build_speaker
     from app.dispatch import build_dispatcher
@@ -56,7 +56,8 @@ def build_services(settings: Settings | None = None) -> Services:
 
     s = settings or get_settings()
     pool = GeminiKeyPool(s)  # embeddings + TTS: every Gemini request starts at GEMINI_API_KEY_1
-    llm = OpenAILLM(s)  # all text generation: OpenAI, one client for the process lifetime
+    # All text generation: Gemini streaming (its own key pool) with OpenAI as the final fallback (app/ai/text_llm.py).
+    llm = build_text_llm(s)
     return Services(
         settings=s,
         db=firestore_client(),

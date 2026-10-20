@@ -67,6 +67,8 @@ def create_app() -> FastAPI:
         key_names = [k.name for k in load_keys(s)]  # names only, never values
         checks["openai"] = f"{s.openai_model}" if s.openai_api_key.strip() else "not configured (needs OPENAI_API_KEY)"
         checks["gemini"] = "vertex" if s.gemini_use_vertex else (f"{len(key_names)} key(s): {', '.join(key_names)}" if key_names else "not configured")
+        checks["text"] = (f"{s.gemini_text_model} (first token within {s.gemini_first_token_timeout_seconds:g}s per key), then openai"
+                          if s.llm_streaming_enabled and (key_names or s.gemini_use_vertex) else "openai only")
         checks["tts"] = s.gemini_tts_model if key_names else "not configured (needs GEMINI_API_KEY_1)"
         checks["dispatch"] = s.dispatch_mode
         for var, status in emulator_status().items():

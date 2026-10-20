@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -97,7 +98,9 @@ def record_events(svc: Services, uid: str, events: list[dict[str, Any]]) -> None
 
 # --- Ask (4.3, 9.4) ---------------------------------------------------------------------------
 
-def ask_stream(svc: Services, uid: str, bid: str, sid: str, question: str) -> Iterator[dict[str, Any]]:
+def ask_stream(svc: Services, uid: str, bid: str, sid: str, question: str,
+               cancel: threading.Event | None = None) -> Iterator[dict[str, Any]]:
+    """`cancel` is set when the client disconnects: the answer stops and no fallback provider is started."""
     check_limit(svc, uid, "ask", svc.settings.daily_limit_ask)
     seg = load_segment(svc, uid, bid, sid)
     others = [{"id": s.id, "title": (s.to_dict() or {}).get("title")} for s in svc.paths.segments(uid, bid).stream() if s.id != sid]
@@ -127,7 +130,7 @@ def ask_stream(svc: Services, uid: str, bid: str, sid: str, question: str) -> It
         prompt = f"SOURCES:\n<source>\n{json.dumps(sources)}\n</source>\n\nQUESTION: {question}"
         buf = ""
         emitted = False
-        for chunk in svc.llm.stream_text("flash", prompts.ASK_SYSTEM, prompt, temperature=0.2):
+        for chunk in svc.llm.stream_text("flash", prompts.ASK_SYSTEM, prompt, temperature=0.2, cancel=cancel):
             buf += chunk
             if not emitted and len(buf.strip()) < len(prompts.NOT_FOUND) and prompts.NOT_FOUND.startswith(buf.strip()):
                 continue  # hold back until we know it is not NOT_FOUND
@@ -151,7 +154,8 @@ def ask_stream(svc: Services, uid: str, bid: str, sid: str, question: str) -> It
     if scope == "outside":
         yield {"type": "reset", "text": answer}
         general = ""
-        for chunk in svc.llm.stream_text("flash", prompts.ASK_GENERAL_SYSTEM, f"QUESTION: {question}", temperature=0.3):
+        for chunk in svc.llm.stream_text("flash", prompts.ASK_GENERAL_SYSTEM, f"QUESTION: {question}", temperature=0.3,
+                                          cancel=cancel):
             general += chunk
             yield {"type": "delta", "text": chunk if general != chunk else prompts.GENERAL_LABEL + chunk}
         answer = f"{answer}{prompts.GENERAL_LABEL}{general.strip()}".strip()

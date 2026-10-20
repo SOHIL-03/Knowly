@@ -41,9 +41,23 @@ class Settings(BaseSettings):
     gcp_project: str = Field(default="demo-knowly", description="Google Cloud / Firebase project id")
     gcp_region: str = "us-central1"
 
-    # --- OpenAI (all text generation) -----------------------------------------------
-    # One backend-only key; every text call (parse, plans, scripts, Ask, quiz, grading, faithfulness)
-    # uses OPENAI_MODEL. There is no fallback to another provider (app/ai/openai_llm.py).
+    # --- Text generation (app/ai/text_llm.py) ---------------------------------------
+    # true: every text call (parse, plans, scripts, Ask, quiz, grading, faithfulness) streams from Gemini
+    # (GEMINI_TEXT_MODEL), one attempt per Gemini key, each with a first-token deadline, then OpenAI as the
+    # final fallback. false: OpenAI only, without streaming for structured output (the previous behaviour).
+    llm_streaming_enabled: bool = True
+    # Model id from the previous Gemini text setup (verified on ai.google.dev on 2026-10-15). Used for every tier.
+    gemini_text_model: str = "gemini-3.8-flash"
+    # Thinking delays the first text token, so it is kept minimal by default. Empty = the model's default.
+    gemini_text_thinking_level: str = "minimal"
+    # A Gemini attempt that has not produced its first text within this many seconds (connection included) is
+    # cancelled and the next key is tried. The OpenAI fallback has no first-token deadline.
+    gemini_first_token_timeout_seconds: float = 3.0
+    # Whether the OpenAI fallback streams structured (JSON) output too. Free-text answers always stream.
+    openai_streaming_enabled: bool = True
+
+    # --- OpenAI (final text fallback) -----------------------------------------------
+    # One backend-only key; used when every Gemini key failed, or for all text when LLM_STREAMING_ENABLED=false.
     openai_api_key: str = Field(default="", repr=False)
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: float = 60.0
@@ -53,9 +67,10 @@ class Settings(BaseSettings):
     # clicks Generate Audio. A briefing can also opt in or out per request.
     review_before_audio: bool = False
 
-    # --- Gemini (embeddings and text-to-speech only) ---------------------------------
+    # --- Gemini (text generation, embeddings, text-to-speech, speech-to-text) --------
     # API keys for the Gemini Developer API, tried in order 1 -> 10 on every request; the next key
-    # is used only when the previous one is out of quota (app/ai/gemini_keys.py). Empty slots are
+    # is used only when the previous one is out of quota (app/ai/gemini_keys.py). Text generation also
+    # moves on when a key is slow to start answering (see above). Empty slots are
     # skipped. GEMINI_API_KEY is the single-key fallback used when no numbered key is set.
     # Alternatively Vertex AI with ADC for embeddings (GEMINI_USE_VERTEX=true); TTS always needs keys.
     gemini_api_key_1: str = Field(default="", repr=False)

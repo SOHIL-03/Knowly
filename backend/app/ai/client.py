@@ -1,14 +1,15 @@
 """AI protocols, shared error types and the Gemini embedding client.
 
-Text generation lives in app/ai/openai_llm.py (OpenAI). Embeddings (and TTS, in app/audio/tts.py) stay
-on Gemini through the shared GeminiKeyPool (app/ai/gemini_keys.py): it starts with GEMINI_API_KEY_1
-for each request and fails over to the next key only on exhausted quota.
+Text generation lives in app/ai/text_llm.py (streamed from Gemini, OpenAI from app/ai/openai_llm.py as the final
+fallback). Embeddings (and TTS, in app/audio/tts.py) use the shared GeminiKeyPool (app/ai/gemini_keys.py): it starts
+with GEMINI_API_KEY_1 for each request and fails over to the next key only on exhausted quota.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections.abc import Callable, Iterator
 from typing import Literal, Protocol, TypeVar
 
@@ -41,6 +42,20 @@ class AiQuotaExceeded(AiUnavailable):
     """The provider's quota is used up (or it stayed rate limited)."""
 
 
+class AiStreamInterrupted(AiUnavailable):
+    """The provider failed after it had already sent text. The generation is incomplete; it is never continued on
+    another key or provider, because the new text would repeat or contradict what the caller already received."""
+
+    def __init__(self, message: str, *, provider: str, partial_chars: int = 0) -> None:
+        super().__init__(message, "stream_interrupted")
+        self.provider = provider
+        self.partial_chars = partial_chars
+
+
+class AiCancelled(RuntimeError):
+    """The caller cancelled the generation (for example the client disconnected). No fallback is started."""
+
+
 class AiOutputInvalid(RuntimeError):
     pass
 
@@ -69,7 +84,9 @@ def to_ai_error(err: GeminiError) -> AiUnavailable:
 class LLM(Protocol):
     def generate_json(self, tier: Tier, system: str, prompt: str, schema: type[T], *, temperature: float = 0.2,
                       max_output_tokens: int | None = None, on_result: Callable[[dict], None] | None = None) -> T: ...
-    def stream_text(self, tier: Tier, system: str, prompt: str, *, temperature: float = 0.3) -> Iterator[str]: ...
+    # `cancel` is set by the caller to stop the generation; the iterator then raises AiCancelled.
+    def stream_text(self, tier: Tier, system: str, prompt: str, *, temperature: float = 0.3,
+                    cancel: threading.Event | None = None) -> Iterator[str]: ...
 
 
 class Embedder(Protocol):
